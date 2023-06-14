@@ -1,0 +1,53 @@
+name: Publish Swift Bindings
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'coinstr-sdk repo release (MAJOR.MINOR.PATCH)'
+        required: true
+        type: string
+
+jobs:
+  build-tag-release:
+    name: Build, tag, and release the Coinstr SDK Swift bindings
+    runs-on: macOS-latest
+    steps:
+      - name: Checkout coinstr repo
+        uses: actions/checkout@v3
+        with:
+          repository: ${{ github.repository_owner }}/coinstr
+          ref: remove-cache-feature
+          path: build
+          # ref: ${{ inputs.version }}
+
+      - name: Checkout coinstr-sdk-swift repo
+        uses: actions/checkout@v3
+        with:
+          path: dist
+          ssh-key: ${{ secrets.REPO_SSH_KEY }}
+
+      - name: Build Swift bindings
+        working-directory: build/bindings/coinstr-sdk-ffi
+        run: |
+          make init
+          make bindings-swift
+
+      - name: Copy Swift Package
+        working-directory: build/bindings/coinstr-sdk-ffi/bindings-swift
+        run: |
+          cp Package.swift ../../../../dist/Package.swift
+          cp -r Sources ../../../../dist
+          cp -r coinstr_sdkFFI.xcframework ../../../../dist
+
+      - name: Tag the Swift bindings
+        working-directory: dist
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add Package.swift
+          git add Sources
+          git add coinstr_sdkFFI.xcframework
+          git commit -m "Update Coinstr SDK Swift bindings to version ${{ inputs.version }}"
+          git push
+          git tag ${{ inputs.version }} -m "${{ inputs.version }}"
+          git push --tags
