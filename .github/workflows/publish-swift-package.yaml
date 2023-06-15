@@ -11,6 +11,8 @@ jobs:
   build-tag-release:
     name: Build, tag, and release the Coinstr SDK Swift bindings
     runs-on: macOS-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout coinstr repo
         uses: actions/checkout@v3
@@ -32,12 +34,17 @@ jobs:
           make init
           make bindings-swift
 
-      - name: Copy Swift Package
+      - name: Compress XCFramework
         working-directory: build/bindings/coinstr-sdk-ffi/bindings-swift
         run: |
-          cp Package.swift ../../../../dist/Package.swift
+          zip -9 -r coinstr_sdkFFI.xcframework.zip coinstr_sdkFFI.xcframework
+          echo "XCF_CHECKSUM=`swift package compute-checksum coinstr_sdkFFI.xcframework.zip`" >> $GITHUB_ENV
+
+      - name: Update Swift Package definition
+        working-directory: build/bindings/coinstr-sdk-ffi/bindings-swift
+        run: |
+          sed 's#.binaryTarget(name: "coinstr_sdkFFI", path: "./coinstr_sdkFFI.xcframework"),#.binaryTarget(name: "coinstr_sdkFFI", url: "https://github.com/coinstr/coinstr-sdk-swift/releases/download/${{ inputs.version }}/coinstr_sdkFFI.xcframework.zip", checksum: "${{ env.XCF_CHECKSUM }}"),#;/.testTarget(name: "CoinstrSDKTests", dependencies: \["CoinstrSDK"\]),/d' Package.swift > ../../../../dist/Package.swift
           cp -r Sources ../../../../dist
-          cp -r coinstr_sdkFFI.xcframework ../../../../dist
 
       - name: Tag the Swift bindings
         working-directory: dist
@@ -46,8 +53,16 @@ jobs:
           git config user.email github-actions@github.com
           git add Package.swift
           git add Sources
-          git add coinstr_sdkFFI.xcframework
           git commit -m "Update Coinstr SDK Swift bindings to version ${{ inputs.version }}"
           git push
           git tag ${{ inputs.version }} -m "${{ inputs.version }}"
           git push --tags
+
+      - name: Release and attach XCFramework binary artifact
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "build/bindings/coinstr-sdk-ffi/bindings-swift/coinstr_sdkFFI.xcframework.zip"
+          tag: ${{ inputs.version }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          name: ${{ inputs.version }}
+          prerelease: true
