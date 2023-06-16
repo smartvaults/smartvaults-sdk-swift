@@ -27,7 +27,35 @@ Add the following to the dependencies array in your `Package.swift`:
 ``` swift
 import CoinstrSDK
 
-// Todo
+// Generate a new keychain
+let coinstr = try Coinstr.generate(basePath: "/path/to/internal/storage", name: "keychain-name", password: "keychain-password", wordCount: WordCount.w24, passphrase: nil, network: Network.testnet);
+
+// Restore a keychain
+let coinstr = try Coinstr.restore(basePath: "/path/to/internal/storage", name: "keychain-name", password: "keychain-password", mnemonic: "...", passphrase: nil, network: Network.testnet);
+
+// Open a keychain
+let coinstr = try Coinstr.open(basePath: "/path/to/internal/storage", name: "keychain-name", password: "keychain-password", network: Network.testnet);
+
+// Complete client configuration (methods that MUST be called)
+try coinstr.setElectrumEndpoint(endpoint: "...");
+try coinstr.addRelaysAndConnect(relays: ["wss://relay.house", "..."]);
+coinstr.sync();
+
+// Get policies and proposals
+let policies = try coinstr.getPolicies();
+let proposals = try coinstr.getProposals();
+
+// Create a new proposal
+let proposalId = try coinstr.spend(policyId: "...", toAddress: "address", amount: 1234, description: "Back to faucet", targetBlocks: 3);
+// or
+let proposalId = try coinstr.spendAll(policyId: "...", toAddress: "address", description: "Back to faucet", targetBlocks: 3);
+
+// Approve a proposal
+try coinstr.approve(proposalId: proposalId);
+
+// Shutdown the client (for logout)
+try coinstr.shutdown();
+
 ```
 
 ## Information for Maintainers and Contributors
