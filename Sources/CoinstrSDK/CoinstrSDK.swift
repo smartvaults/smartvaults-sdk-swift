@@ -19,13 +19,13 @@ fileprivate extension RustBuffer {
     }
 
     static func from(_ ptr: UnsafeBufferPointer<UInt8>) -> RustBuffer {
-        try! rustCall { ffi_coinstr_sdk_c407_rustbuffer_from_bytes(ForeignBytes(bufferPointer: ptr), $0) }
+        try! rustCall { ffi_coinstr_sdk_d7d0_rustbuffer_from_bytes(ForeignBytes(bufferPointer: ptr), $0) }
     }
 
     // Frees the buffer in place.
     // The buffer must not be used after this is called.
     func deallocate() {
-        try! rustCall { ffi_coinstr_sdk_c407_rustbuffer_free(self, $0) }
+        try! rustCall { ffi_coinstr_sdk_d7d0_rustbuffer_free(self, $0) }
     }
 }
 
@@ -421,7 +421,7 @@ public class Balance: BalanceProtocol {
     }
 
     deinit {
-        try! rustCall { ffi_coinstr_sdk_c407_Balance_object_free(pointer, $0) }
+        try! rustCall { ffi_coinstr_sdk_d7d0_Balance_object_free(pointer, $0) }
     }
 
     
@@ -432,7 +432,7 @@ public class Balance: BalanceProtocol {
             try!
     rustCall() {
     
-    coinstr_sdk_c407_Balance_get_spendable(self.pointer, $0
+    coinstr_sdk_d7d0_Balance_get_spendable(self.pointer, $0
     )
 }
         )
@@ -442,7 +442,7 @@ public class Balance: BalanceProtocol {
             try!
     rustCall() {
     
-    coinstr_sdk_c407_Balance_get_total(self.pointer, $0
+    coinstr_sdk_d7d0_Balance_get_total(self.pointer, $0
     )
 }
         )
@@ -501,8 +501,8 @@ public protocol CoinstrProtocol {
     func `getProposalById`(`proposalId`: String) throws -> Proposal
     func `getCompletedProposalById`(`completedProposalId`: String) throws -> CompletedProposal
     func `deletePolicyById`(`policyId`: String, `timeout`: TimeInterval?) throws
-    func `deleteProposalById`(`proposalId`: String, `timeout`: TimeInterval?) throws
-    func `deleteCompletedProposalById`(`completedProposalId`: String, `timeout`: TimeInterval?) throws
+    func `deleteProposalById`(`proposalId`: String) throws
+    func `deleteCompletedProposalById`(`completedProposalId`: String) throws
     func `deleteSignerById`(`signerId`: String, `timeout`: TimeInterval?) throws
     func `getPolicies`() throws -> [String: Policy]
     func `getProposals`() throws -> [String: Proposal]
@@ -511,7 +511,7 @@ public protocol CoinstrProtocol {
     func `spendAll`(`policyId`: String, `toAddress`: String, `description`: String, `targetBlocks`: UInt16) throws -> String
     func `approve`(`proposalId`: String) throws -> String
     func `approveWithSignedPsbt`(`proposalId`: String, `signedPsbt`: String) throws -> String
-    func `finalize`(`proposalId`: String, `timeout`: TimeInterval?) throws -> CompletedProposal
+    func `finalize`(`proposalId`: String) throws -> CompletedProposal
     func `rebroadcastAllEvents`() throws
     func `republishSharedKeyForPolicy`(`policyId`: String) throws
     func `getBalance`(`policyId`: String) throws -> Balance?
@@ -532,7 +532,7 @@ public class Coinstr: CoinstrProtocol {
     }
 
     deinit {
-        try! rustCall { ffi_coinstr_sdk_c407_Coinstr_object_free(pointer, $0) }
+        try! rustCall { ffi_coinstr_sdk_d7d0_Coinstr_object_free(pointer, $0) }
     }
 
     
@@ -541,7 +541,7 @@ public class Coinstr: CoinstrProtocol {
     
     rustCallWithError(FfiConverterTypeFfiError.self) {
     
-    coinstr_sdk_c407_Coinstr_open(
+    coinstr_sdk_d7d0_Coinstr_open(
         FfiConverterString.lower(`basePath`), 
         FfiConverterString.lower(`name`), 
         FfiConverterString.lower(`password`), 
@@ -554,7 +554,7 @@ public class Coinstr: CoinstrProtocol {
     
     rustCallWithError(FfiConverterTypeFfiError.self) {
     
-    coinstr_sdk_c407_Coinstr_generate(
+    coinstr_sdk_d7d0_Coinstr_generate(
         FfiConverterString.lower(`basePath`), 
         FfiConverterString.lower(`name`), 
         FfiConverterString.lower(`password`), 
@@ -569,7 +569,7 @@ public class Coinstr: CoinstrProtocol {
     
     rustCallWithError(FfiConverterTypeFfiError.self) {
     
-    coinstr_sdk_c407_Coinstr_restore(
+    coinstr_sdk_d7d0_Coinstr_restore(
         FfiConverterString.lower(`basePath`), 
         FfiConverterString.lower(`name`), 
         FfiConverterString.lower(`password`), 
@@ -584,7 +584,7 @@ public class Coinstr: CoinstrProtocol {
     public func `save`() throws {
         try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_save(self.pointer, $0
+    coinstr_sdk_d7d0_Coinstr_save(self.pointer, $0
     )
 }
     }
@@ -593,7 +593,7 @@ public class Coinstr: CoinstrProtocol {
             try!
     rustCall() {
     
-    coinstr_sdk_c407_Coinstr_check_password(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_check_password(self.pointer, 
         FfiConverterString.lower(`password`), $0
     )
 }
@@ -602,7 +602,7 @@ public class Coinstr: CoinstrProtocol {
     public func `wipe`(`password`: String) throws {
         try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_wipe(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_wipe(self.pointer, 
         FfiConverterString.lower(`password`), $0
     )
 }
@@ -612,7 +612,7 @@ public class Coinstr: CoinstrProtocol {
             try!
     rustCall() {
     
-    coinstr_sdk_c407_Coinstr_network(self.pointer, $0
+    coinstr_sdk_d7d0_Coinstr_network(self.pointer, $0
     )
 }
         )
@@ -620,7 +620,7 @@ public class Coinstr: CoinstrProtocol {
     public func `addRelay`(`url`: String) throws {
         try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_add_relay(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_add_relay(self.pointer, 
         FfiConverterString.lower(`url`), $0
     )
 }
@@ -629,14 +629,14 @@ public class Coinstr: CoinstrProtocol {
         try!
     rustCall() {
     
-    coinstr_sdk_c407_Coinstr_connect(self.pointer, $0
+    coinstr_sdk_d7d0_Coinstr_connect(self.pointer, $0
     )
 }
     }
     public func `addRelaysAndConnect`(`relays`: [String]) throws {
         try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_add_relays_and_connect(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_add_relays_and_connect(self.pointer, 
         FfiConverterSequenceString.lower(`relays`), $0
     )
 }
@@ -644,7 +644,7 @@ public class Coinstr: CoinstrProtocol {
     public func `removeRelay`(`url`: String) throws {
         try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_remove_relay(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_remove_relay(self.pointer, 
         FfiConverterString.lower(`url`), $0
     )
 }
@@ -652,7 +652,7 @@ public class Coinstr: CoinstrProtocol {
     public func `shutdown`() throws {
         try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_shutdown(self.pointer, $0
+    coinstr_sdk_d7d0_Coinstr_shutdown(self.pointer, $0
     )
 }
     }
@@ -660,7 +660,7 @@ public class Coinstr: CoinstrProtocol {
         try!
     rustCall() {
     
-    coinstr_sdk_c407_Coinstr_set_electrum_endpoint(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_set_electrum_endpoint(self.pointer, 
         FfiConverterString.lower(`endpoint`), $0
     )
 }
@@ -669,7 +669,7 @@ public class Coinstr: CoinstrProtocol {
         return try FfiConverterString.lift(
             try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_electrum_endpoint(self.pointer, $0
+    coinstr_sdk_d7d0_Coinstr_electrum_endpoint(self.pointer, $0
     )
 }
         )
@@ -679,7 +679,7 @@ public class Coinstr: CoinstrProtocol {
             try!
     rustCall() {
     
-    coinstr_sdk_c407_Coinstr_block_height(self.pointer, $0
+    coinstr_sdk_d7d0_Coinstr_block_height(self.pointer, $0
     )
 }
         )
@@ -687,7 +687,7 @@ public class Coinstr: CoinstrProtocol {
     public func `addContact`(`publicKey`: String) throws {
         try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_add_contact(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_add_contact(self.pointer, 
         FfiConverterString.lower(`publicKey`), $0
     )
 }
@@ -695,7 +695,7 @@ public class Coinstr: CoinstrProtocol {
     public func `removeContact`(`publicKey`: String) throws {
         try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_remove_contact(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_remove_contact(self.pointer, 
         FfiConverterString.lower(`publicKey`), $0
     )
 }
@@ -704,7 +704,7 @@ public class Coinstr: CoinstrProtocol {
         return try FfiConverterTypePolicy.lift(
             try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_get_policy_by_id(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_get_policy_by_id(self.pointer, 
         FfiConverterString.lower(`policyId`), $0
     )
 }
@@ -714,7 +714,7 @@ public class Coinstr: CoinstrProtocol {
         return try FfiConverterTypeProposal.lift(
             try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_get_proposal_by_id(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_get_proposal_by_id(self.pointer, 
         FfiConverterString.lower(`proposalId`), $0
     )
 }
@@ -724,7 +724,7 @@ public class Coinstr: CoinstrProtocol {
         return try FfiConverterTypeCompletedProposal.lift(
             try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_get_completed_proposal_by_id(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_get_completed_proposal_by_id(self.pointer, 
         FfiConverterString.lower(`completedProposalId`), $0
     )
 }
@@ -733,34 +733,32 @@ public class Coinstr: CoinstrProtocol {
     public func `deletePolicyById`(`policyId`: String, `timeout`: TimeInterval?) throws {
         try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_delete_policy_by_id(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_delete_policy_by_id(self.pointer, 
         FfiConverterString.lower(`policyId`), 
         FfiConverterOptionDuration.lower(`timeout`), $0
     )
 }
     }
-    public func `deleteProposalById`(`proposalId`: String, `timeout`: TimeInterval?) throws {
+    public func `deleteProposalById`(`proposalId`: String) throws {
         try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_delete_proposal_by_id(self.pointer, 
-        FfiConverterString.lower(`proposalId`), 
-        FfiConverterOptionDuration.lower(`timeout`), $0
+    coinstr_sdk_d7d0_Coinstr_delete_proposal_by_id(self.pointer, 
+        FfiConverterString.lower(`proposalId`), $0
     )
 }
     }
-    public func `deleteCompletedProposalById`(`completedProposalId`: String, `timeout`: TimeInterval?) throws {
+    public func `deleteCompletedProposalById`(`completedProposalId`: String) throws {
         try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_delete_completed_proposal_by_id(self.pointer, 
-        FfiConverterString.lower(`completedProposalId`), 
-        FfiConverterOptionDuration.lower(`timeout`), $0
+    coinstr_sdk_d7d0_Coinstr_delete_completed_proposal_by_id(self.pointer, 
+        FfiConverterString.lower(`completedProposalId`), $0
     )
 }
     }
     public func `deleteSignerById`(`signerId`: String, `timeout`: TimeInterval?) throws {
         try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_delete_signer_by_id(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_delete_signer_by_id(self.pointer, 
         FfiConverterString.lower(`signerId`), 
         FfiConverterOptionDuration.lower(`timeout`), $0
     )
@@ -770,7 +768,7 @@ public class Coinstr: CoinstrProtocol {
         return try FfiConverterDictionaryStringTypePolicy.lift(
             try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_get_policies(self.pointer, $0
+    coinstr_sdk_d7d0_Coinstr_get_policies(self.pointer, $0
     )
 }
         )
@@ -779,7 +777,7 @@ public class Coinstr: CoinstrProtocol {
         return try FfiConverterDictionaryStringTypeProposal.lift(
             try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_get_proposals(self.pointer, $0
+    coinstr_sdk_d7d0_Coinstr_get_proposals(self.pointer, $0
     )
 }
         )
@@ -788,7 +786,7 @@ public class Coinstr: CoinstrProtocol {
         return try FfiConverterDictionaryStringTypeCompletedProposal.lift(
             try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_get_completed_proposals(self.pointer, $0
+    coinstr_sdk_d7d0_Coinstr_get_completed_proposals(self.pointer, $0
     )
 }
         )
@@ -797,7 +795,7 @@ public class Coinstr: CoinstrProtocol {
         return try FfiConverterString.lift(
             try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_spend(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_spend(self.pointer, 
         FfiConverterString.lower(`policyId`), 
         FfiConverterString.lower(`toAddress`), 
         FfiConverterUInt64.lower(`amount`), 
@@ -811,7 +809,7 @@ public class Coinstr: CoinstrProtocol {
         return try FfiConverterString.lift(
             try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_spend_all(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_spend_all(self.pointer, 
         FfiConverterString.lower(`policyId`), 
         FfiConverterString.lower(`toAddress`), 
         FfiConverterString.lower(`description`), 
@@ -824,7 +822,7 @@ public class Coinstr: CoinstrProtocol {
         return try FfiConverterString.lift(
             try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_approve(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_approve(self.pointer, 
         FfiConverterString.lower(`proposalId`), $0
     )
 }
@@ -834,20 +832,19 @@ public class Coinstr: CoinstrProtocol {
         return try FfiConverterString.lift(
             try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_approve_with_signed_psbt(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_approve_with_signed_psbt(self.pointer, 
         FfiConverterString.lower(`proposalId`), 
         FfiConverterString.lower(`signedPsbt`), $0
     )
 }
         )
     }
-    public func `finalize`(`proposalId`: String, `timeout`: TimeInterval?) throws -> CompletedProposal {
+    public func `finalize`(`proposalId`: String) throws -> CompletedProposal {
         return try FfiConverterTypeCompletedProposal.lift(
             try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_finalize(self.pointer, 
-        FfiConverterString.lower(`proposalId`), 
-        FfiConverterOptionDuration.lower(`timeout`), $0
+    coinstr_sdk_d7d0_Coinstr_finalize(self.pointer, 
+        FfiConverterString.lower(`proposalId`), $0
     )
 }
         )
@@ -855,14 +852,14 @@ public class Coinstr: CoinstrProtocol {
     public func `rebroadcastAllEvents`() throws {
         try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_rebroadcast_all_events(self.pointer, $0
+    coinstr_sdk_d7d0_Coinstr_rebroadcast_all_events(self.pointer, $0
     )
 }
     }
     public func `republishSharedKeyForPolicy`(`policyId`: String) throws {
         try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_republish_shared_key_for_policy(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_republish_shared_key_for_policy(self.pointer, 
         FfiConverterString.lower(`policyId`), $0
     )
 }
@@ -871,7 +868,7 @@ public class Coinstr: CoinstrProtocol {
         return try FfiConverterOptionTypeBalance.lift(
             try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_get_balance(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_get_balance(self.pointer, 
         FfiConverterString.lower(`policyId`), $0
     )
 }
@@ -881,7 +878,7 @@ public class Coinstr: CoinstrProtocol {
         return try FfiConverterTypeBalance.lift(
             try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_get_total_balance(self.pointer, $0
+    coinstr_sdk_d7d0_Coinstr_get_total_balance(self.pointer, $0
     )
 }
         )
@@ -890,7 +887,7 @@ public class Coinstr: CoinstrProtocol {
         return try FfiConverterOptionString.lift(
             try
     rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_c407_Coinstr_get_last_unused_address(self.pointer, 
+    coinstr_sdk_d7d0_Coinstr_get_last_unused_address(self.pointer, 
         FfiConverterString.lower(`policyId`), $0
     )
 }
@@ -900,7 +897,7 @@ public class Coinstr: CoinstrProtocol {
         try!
     rustCall() {
     
-    coinstr_sdk_c407_Coinstr_sync(self.pointer, $0
+    coinstr_sdk_d7d0_Coinstr_sync(self.pointer, $0
     )
 }
     }
@@ -957,7 +954,7 @@ public class Policy: PolicyProtocol {
     }
 
     deinit {
-        try! rustCall { ffi_coinstr_sdk_c407_Policy_object_free(pointer, $0) }
+        try! rustCall { ffi_coinstr_sdk_d7d0_Policy_object_free(pointer, $0) }
     }
 
     
@@ -968,7 +965,7 @@ public class Policy: PolicyProtocol {
             try!
     rustCall() {
     
-    coinstr_sdk_c407_Policy_name(self.pointer, $0
+    coinstr_sdk_d7d0_Policy_name(self.pointer, $0
     )
 }
         )
@@ -978,7 +975,7 @@ public class Policy: PolicyProtocol {
             try!
     rustCall() {
     
-    coinstr_sdk_c407_Policy_description(self.pointer, $0
+    coinstr_sdk_d7d0_Policy_description(self.pointer, $0
     )
 }
         )
@@ -988,7 +985,7 @@ public class Policy: PolicyProtocol {
             try!
     rustCall() {
     
-    coinstr_sdk_c407_Policy_descriptor(self.pointer, $0
+    coinstr_sdk_d7d0_Policy_descriptor(self.pointer, $0
     )
 }
         )
@@ -1488,7 +1485,7 @@ public func `getKeychainsList`(`basePath`: String, `network`: Network) throws ->
     
     rustCallWithError(FfiConverterTypeFfiError.self) {
     
-    coinstr_sdk_c407_get_keychains_list(
+    coinstr_sdk_d7d0_get_keychains_list(
         FfiConverterString.lower(`basePath`), 
         FfiConverterTypeNetwork.lower(`network`), $0)
 }

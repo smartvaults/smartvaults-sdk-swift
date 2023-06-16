@@ -14,7 +14,7 @@ let package = Package(
     dependencies: [
     ],
     targets: [
-        .binaryTarget(name: "coinstr_sdkFFI", url: "https://github.com/coinstr/coinstr-sdk-swift/releases/download/0.0.1/coinstr_sdkFFI.xcframework.zip", checksum: "5dd7b6d17d99e986f447c9884063355028fbd097442af641600a9290c31dff5c"),
+        .binaryTarget(name: "coinstr_sdkFFI", url: "https://github.com/coinstr/coinstr-sdk-swift/releases/download/0.0.2/coinstr_sdkFFI.xcframework.zip", checksum: "2c7abd738a3ad8e89eedd6e9cab7642240d78268f13177a827f17cef15af483f"),
         .target(name: "CoinstrSDK", dependencies: ["coinstr_sdkFFI"]),
     ]
 )
