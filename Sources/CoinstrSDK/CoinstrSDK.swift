@@ -19,13 +19,13 @@ fileprivate extension RustBuffer {
     }
 
     static func from(_ ptr: UnsafeBufferPointer<UInt8>) -> RustBuffer {
-        try! rustCall { ffi_coinstr_sdk_d7d0_rustbuffer_from_bytes(ForeignBytes(bufferPointer: ptr), $0) }
+        try! rustCall { ffi_coinstr_sdk_rustbuffer_from_bytes(ForeignBytes(bufferPointer: ptr), $0) }
     }
 
     // Frees the buffer in place.
     // The buffer must not be used after this is called.
     func deallocate() {
-        try! rustCall { ffi_coinstr_sdk_d7d0_rustbuffer_free(self, $0) }
+        try! rustCall { ffi_coinstr_sdk_rustbuffer_free(self, $0) }
     }
 }
 
@@ -238,28 +238,41 @@ fileprivate extension RustCallStatus {
 }
 
 private func rustCall<T>(_ callback: (UnsafeMutablePointer<RustCallStatus>) -> T) throws -> T {
-    try makeRustCall(callback, errorHandler: {
-        $0.deallocate()
-        return UniffiInternalError.unexpectedRustCallError
-    })
+    try makeRustCall(callback, errorHandler: nil)
 }
 
-private func rustCallWithError<T, F: FfiConverter>
-    (_ errorFfiConverter: F.Type, _ callback: (UnsafeMutablePointer<RustCallStatus>) -> T) throws -> T
-    where F.SwiftType: Error, F.FfiType == RustBuffer
-    {
-    try makeRustCall(callback, errorHandler: { return try errorFfiConverter.lift($0) })
+private func rustCallWithError<T>(
+    _ errorHandler: @escaping (RustBuffer) throws -> Error,
+    _ callback: (UnsafeMutablePointer<RustCallStatus>) -> T) throws -> T {
+    try makeRustCall(callback, errorHandler: errorHandler)
 }
 
-private func makeRustCall<T>(_ callback: (UnsafeMutablePointer<RustCallStatus>) -> T, errorHandler: (RustBuffer) throws -> Error) throws -> T {
+private func makeRustCall<T>(
+    _ callback: (UnsafeMutablePointer<RustCallStatus>) -> T,
+    errorHandler: ((RustBuffer) throws -> Error)?
+) throws -> T {
+    uniffiEnsureInitialized()
     var callStatus = RustCallStatus.init()
     let returnedVal = callback(&callStatus)
+    try uniffiCheckCallStatus(callStatus: callStatus, errorHandler: errorHandler)
+    return returnedVal
+}
+
+private func uniffiCheckCallStatus(
+    callStatus: RustCallStatus,
+    errorHandler: ((RustBuffer) throws -> Error)?
+) throws {
     switch callStatus.code {
         case CALL_SUCCESS:
-            return returnedVal
+            return
 
         case CALL_ERROR:
-            throw try errorHandler(callStatus.errorBuf)
+            if let errorHandler = errorHandler {
+                throw try errorHandler(callStatus.errorBuf)
+            } else {
+                callStatus.errorBuf.deallocate()
+                throw UniffiInternalError.unexpectedRustCallError
+            }
 
         case CALL_PANIC:
             // When the rust code sees a panic, it tries to construct a RustBuffer
@@ -378,35 +391,91 @@ fileprivate struct FfiConverterString: FfiConverter {
     }
 }
 
-fileprivate struct FfiConverterDuration: FfiConverterRustBuffer {
-    typealias SwiftType = TimeInterval
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TimeInterval {
-        let seconds: UInt64 = try readInt(&buf)
-        let nanoseconds: UInt32 = try readInt(&buf)
-        return Double(seconds) + (Double(nanoseconds) / 1.0e9)
+public protocol AmountProtocol {
+    
+}
+
+public class Amount: AmountProtocol {
+    fileprivate let pointer: UnsafeMutableRawPointer
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+    required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        self.pointer = pointer
     }
 
-    public static func write(_ value: TimeInterval, into buf: inout [UInt8]) {
-        if value.rounded(.down) > Double(Int64.max) {
-            fatalError("Duration overflow, exceeds max bounds supported by Uniffi")
-        }
+    deinit {
+        try! rustCall { uniffi_coinstr_sdk_fn_free_amount(pointer, $0) }
+    }
 
-        if value < 0 {
-            fatalError("Invalid duration, must be non-negative")
-        }
+    
 
-        let seconds = UInt64(value)
-        let nanoseconds = UInt32((value - Double(seconds)) * 1.0e9)
-        writeInt(&buf, seconds)
-        writeInt(&buf, nanoseconds)
+    public static func `custom`(`amount`: UInt64)  -> Amount {
+        return Amount(unsafeFromRawPointer: try! rustCall() {
+    uniffi_coinstr_sdk_fn_constructor_amount_custom(
+        FfiConverterUInt64.lower(`amount`),$0)
+})
+    }
+
+    
+
+    public static func `max`()  -> Amount {
+        return Amount(unsafeFromRawPointer: try! rustCall() {
+    uniffi_coinstr_sdk_fn_constructor_amount_max($0)
+})
+    }
+
+    
+
+    
+    
+}
+
+public struct FfiConverterTypeAmount: FfiConverter {
+    typealias FfiType = UnsafeMutableRawPointer
+    typealias SwiftType = Amount
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Amount {
+        let v: UInt64 = try readInt(&buf)
+        // The Rust code won't compile if a pointer won't fit in a UInt64.
+        // We have to go via `UInt` because that's the thing that's the size of a pointer.
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
+        if (ptr == nil) {
+            throw UniffiInternalError.unexpectedNullPointer
+        }
+        return try lift(ptr!)
+    }
+
+    public static func write(_ value: Amount, into buf: inout [UInt8]) {
+        // This fiddling is because `Int` is the thing that's the same size as a pointer.
+        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
+        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+    }
+
+    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> Amount {
+        return Amount(unsafeFromRawPointer: pointer)
+    }
+
+    public static func lower(_ value: Amount) -> UnsafeMutableRawPointer {
+        return value.pointer
     }
 }
 
 
+public func FfiConverterTypeAmount_lift(_ pointer: UnsafeMutableRawPointer) throws -> Amount {
+    return try FfiConverterTypeAmount.lift(pointer)
+}
+
+public func FfiConverterTypeAmount_lower(_ value: Amount) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeAmount.lower(value)
+}
+
+
 public protocol BalanceProtocol {
-    func `getSpendable`()  -> UInt64
-    func `getTotal`()  -> UInt64
+    func `getSpendable`()   -> UInt64
+    func `getTotal`()   -> UInt64
     
 }
 
@@ -421,35 +490,36 @@ public class Balance: BalanceProtocol {
     }
 
     deinit {
-        try! rustCall { ffi_coinstr_sdk_d7d0_Balance_object_free(pointer, $0) }
+        try! rustCall { uniffi_coinstr_sdk_fn_free_balance(pointer, $0) }
     }
 
     
 
     
+    
+
     public func `getSpendable`()  -> UInt64 {
-        return try! FfiConverterUInt64.lift(
-            try!
+        return try!  FfiConverterUInt64.lift(
+            try! 
     rustCall() {
     
-    coinstr_sdk_d7d0_Balance_get_spendable(self.pointer, $0
+    uniffi_coinstr_sdk_fn_method_balance_get_spendable(self.pointer, $0
     )
 }
         )
     }
-    public func `getTotal`()  -> UInt64 {
-        return try! FfiConverterUInt64.lift(
-            try!
-    rustCall() {
-    
-    coinstr_sdk_d7d0_Balance_get_total(self.pointer, $0
-    )
-}
-        )
-    }
-    
-}
 
+    public func `getTotal`()  -> UInt64 {
+        return try!  FfiConverterUInt64.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_balance_get_total(self.pointer, $0
+    )
+}
+        )
+    }
+}
 
 public struct FfiConverterTypeBalance: FfiConverter {
     typealias FfiType = UnsafeMutableRawPointer
@@ -482,42 +552,157 @@ public struct FfiConverterTypeBalance: FfiConverter {
 }
 
 
+public func FfiConverterTypeBalance_lift(_ pointer: UnsafeMutableRawPointer) throws -> Balance {
+    return try FfiConverterTypeBalance.lift(pointer)
+}
+
+public func FfiConverterTypeBalance_lower(_ value: Balance) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeBalance.lower(value)
+}
+
+
+public protocol BlockTimeProtocol {
+    func `height`()   -> UInt32
+    func `timestamp`()   -> UInt64
+    
+}
+
+public class BlockTime: BlockTimeProtocol {
+    fileprivate let pointer: UnsafeMutableRawPointer
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+    required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        self.pointer = pointer
+    }
+
+    deinit {
+        try! rustCall { uniffi_coinstr_sdk_fn_free_blocktime(pointer, $0) }
+    }
+
+    
+
+    
+    
+
+    public func `height`()  -> UInt32 {
+        return try!  FfiConverterUInt32.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_blocktime_height(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `timestamp`()  -> UInt64 {
+        return try!  FfiConverterUInt64.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_blocktime_timestamp(self.pointer, $0
+    )
+}
+        )
+    }
+}
+
+public struct FfiConverterTypeBlockTime: FfiConverter {
+    typealias FfiType = UnsafeMutableRawPointer
+    typealias SwiftType = BlockTime
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BlockTime {
+        let v: UInt64 = try readInt(&buf)
+        // The Rust code won't compile if a pointer won't fit in a UInt64.
+        // We have to go via `UInt` because that's the thing that's the size of a pointer.
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
+        if (ptr == nil) {
+            throw UniffiInternalError.unexpectedNullPointer
+        }
+        return try lift(ptr!)
+    }
+
+    public static func write(_ value: BlockTime, into buf: inout [UInt8]) {
+        // This fiddling is because `Int` is the thing that's the same size as a pointer.
+        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
+        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+    }
+
+    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> BlockTime {
+        return BlockTime(unsafeFromRawPointer: pointer)
+    }
+
+    public static func lower(_ value: BlockTime) -> UnsafeMutableRawPointer {
+        return value.pointer
+    }
+}
+
+
+public func FfiConverterTypeBlockTime_lift(_ pointer: UnsafeMutableRawPointer) throws -> BlockTime {
+    return try FfiConverterTypeBlockTime.lift(pointer)
+}
+
+public func FfiConverterTypeBlockTime_lower(_ value: BlockTime) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeBlockTime.lower(value)
+}
+
+
 public protocol CoinstrProtocol {
-    func `save`() throws
-    func `checkPassword`(`password`: String)  -> Bool
-    func `wipe`(`password`: String) throws
-    func `network`()  -> Network
-    func `addRelay`(`url`: String) throws
-    func `connect`() 
-    func `addRelaysAndConnect`(`relays`: [String]) throws
-    func `removeRelay`(`url`: String) throws
-    func `shutdown`() throws
-    func `setElectrumEndpoint`(`endpoint`: String) 
-    func `electrumEndpoint`() throws -> String
-    func `blockHeight`()  -> UInt32
-    func `addContact`(`publicKey`: String) throws
-    func `removeContact`(`publicKey`: String) throws
-    func `getPolicyById`(`policyId`: String) throws -> Policy
-    func `getProposalById`(`proposalId`: String) throws -> Proposal
-    func `getCompletedProposalById`(`completedProposalId`: String) throws -> CompletedProposal
-    func `deletePolicyById`(`policyId`: String, `timeout`: TimeInterval?) throws
-    func `deleteProposalById`(`proposalId`: String) throws
-    func `deleteCompletedProposalById`(`completedProposalId`: String) throws
-    func `deleteSignerById`(`signerId`: String, `timeout`: TimeInterval?) throws
-    func `getPolicies`() throws -> [String: Policy]
-    func `getProposals`() throws -> [String: Proposal]
-    func `getCompletedProposals`() throws -> [String: CompletedProposal]
-    func `spend`(`policyId`: String, `toAddress`: String, `amount`: UInt64, `description`: String, `targetBlocks`: UInt16) throws -> String
-    func `spendAll`(`policyId`: String, `toAddress`: String, `description`: String, `targetBlocks`: UInt16) throws -> String
-    func `approve`(`proposalId`: String) throws -> String
-    func `approveWithSignedPsbt`(`proposalId`: String, `signedPsbt`: String) throws -> String
-    func `finalize`(`proposalId`: String) throws -> CompletedProposal
-    func `rebroadcastAllEvents`() throws
-    func `republishSharedKeyForPolicy`(`policyId`: String) throws
-    func `getBalance`(`policyId`: String) throws -> Balance?
-    func `getTotalBalance`() throws -> Balance
-    func `getLastUnusedAddress`(`policyId`: String) throws -> String?
-    func `sync`() 
+    func `name`()   -> String?
+    func `save`()  throws
+    func `checkPassword`(`password`: String)   -> Bool
+    func `wipe`(`password`: String)  throws
+    func `clearCache`()  throws
+    func `seed`()   -> KeychainSeed
+    func `keys`()   -> Keys
+    func `network`()   -> Network
+    func `addRelay`(`url`: String)  throws
+    func `relays`()   -> [Relay]
+    func `connect`()  
+    func `defaultRelays`()   -> [String]
+    func `addRelaysAndConnect`(`relays`: [String])  throws
+    func `removeRelay`(`url`: String)  throws
+    func `shutdown`()  throws
+    func `setElectrumEndpoint`(`endpoint`: String)  
+    func `electrumEndpoint`()  throws -> String
+    func `blockHeight`()   -> UInt32
+    func `setMetadata`(`json`: String)  throws
+    func `getProfile`()  throws -> Metadata
+    func `getContacts`()  throws -> [String: Metadata]
+    func `addContact`(`publicKey`: String)  throws
+    func `removeContact`(`publicKey`: String)  throws
+    func `getPolicyById`(`policyId`: String)  throws -> Policy
+    func `getProposalById`(`proposalId`: String)  throws -> Proposal
+    func `getCompletedProposalById`(`completedProposalId`: String)  throws -> CompletedProposal
+    func `getSignerById`(`signerId`: String)  throws -> Signer
+    func `deletePolicyById`(`policyId`: String)  throws
+    func `deleteProposalById`(`proposalId`: String)  throws
+    func `deleteCompletedProposalById`(`completedProposalId`: String)  throws
+    func `deleteSignerById`(`signerId`: String)  throws
+    func `getPolicies`()  throws -> [String: Policy]
+    func `getProposals`()  throws -> [String: Proposal]
+    func `getCompletedProposals`()  throws -> [String: CompletedProposal]
+    func `savePolicy`(`name`: String, `description`: String, `descriptor`: String, `publicKeys`: [String])  throws -> String
+    func `spend`(`policyId`: String, `toAddress`: String, `amount`: Amount, `description`: String, `targetBlocks`: UInt16)  throws -> String
+    func `selfTransfer`(`fromPolicyId`: String, `toPolicyId`: String, `amount`: Amount, `targetBlocks`: UInt16)  throws -> String
+    func `approve`(`proposalId`: String)  throws -> String
+    func `approveWithSignedPsbt`(`proposalId`: String, `signedPsbt`: String)  throws -> String
+    func `revokeApproval`(`approvalId`: String)  throws
+    func `finalize`(`proposalId`: String)  throws -> CompletedProposal
+    func `newProofProposal`(`policyId`: String, `message`: String)  throws -> String
+    func `coinstrSignerExists`()  throws -> Bool
+    func `saveCoinstrSigner`()  throws -> String
+    func `rebroadcastAllEvents`()  throws
+    func `republishSharedKeyForPolicy`(`policyId`: String)  throws
+    func `getBalance`(`policyId`: String)  throws -> Balance?
+    func `getTxs`(`policyId`: String)  throws -> [TransactionDetails]
+    func `getUtxos`(`policyId`: String)  throws -> [Utxo]
+    func `getTotalBalance`()  throws -> Balance
+    func `getAllTxs`()  throws -> [TransactionDetails]
+    func `getLastUnusedAddress`(`policyId`: String)  throws -> String?
+    func `sync`()  
     
 }
 
@@ -532,378 +717,597 @@ public class Coinstr: CoinstrProtocol {
     }
 
     deinit {
-        try! rustCall { ffi_coinstr_sdk_d7d0_Coinstr_object_free(pointer, $0) }
+        try! rustCall { uniffi_coinstr_sdk_fn_free_coinstr(pointer, $0) }
     }
 
     
+
     public static func `open`(`basePath`: String, `name`: String, `password`: String, `network`: Network) throws -> Coinstr {
-        return Coinstr(unsafeFromRawPointer: try
-    
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    
-    coinstr_sdk_d7d0_Coinstr_open(
-        FfiConverterString.lower(`basePath`), 
-        FfiConverterString.lower(`name`), 
-        FfiConverterString.lower(`password`), 
-        FfiConverterTypeNetwork.lower(`network`), $0)
+        return Coinstr(unsafeFromRawPointer: try rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_constructor_coinstr_open(
+        FfiConverterString.lower(`basePath`),
+        FfiConverterString.lower(`name`),
+        FfiConverterString.lower(`password`),
+        FfiConverterTypeNetwork.lower(`network`),$0)
 })
     }
+
     
+
     public static func `generate`(`basePath`: String, `name`: String, `password`: String, `wordCount`: WordCount, `passphrase`: String?, `network`: Network) throws -> Coinstr {
-        return Coinstr(unsafeFromRawPointer: try
-    
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    
-    coinstr_sdk_d7d0_Coinstr_generate(
-        FfiConverterString.lower(`basePath`), 
-        FfiConverterString.lower(`name`), 
-        FfiConverterString.lower(`password`), 
-        FfiConverterTypeWordCount.lower(`wordCount`), 
-        FfiConverterOptionString.lower(`passphrase`), 
-        FfiConverterTypeNetwork.lower(`network`), $0)
+        return Coinstr(unsafeFromRawPointer: try rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_constructor_coinstr_generate(
+        FfiConverterString.lower(`basePath`),
+        FfiConverterString.lower(`name`),
+        FfiConverterString.lower(`password`),
+        FfiConverterTypeWordCount.lower(`wordCount`),
+        FfiConverterOptionString.lower(`passphrase`),
+        FfiConverterTypeNetwork.lower(`network`),$0)
 })
     }
+
     
+
     public static func `restore`(`basePath`: String, `name`: String, `password`: String, `mnemonic`: String, `passphrase`: String?, `network`: Network) throws -> Coinstr {
-        return Coinstr(unsafeFromRawPointer: try
-    
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    
-    coinstr_sdk_d7d0_Coinstr_restore(
-        FfiConverterString.lower(`basePath`), 
-        FfiConverterString.lower(`name`), 
-        FfiConverterString.lower(`password`), 
-        FfiConverterString.lower(`mnemonic`), 
-        FfiConverterOptionString.lower(`passphrase`), 
-        FfiConverterTypeNetwork.lower(`network`), $0)
+        return Coinstr(unsafeFromRawPointer: try rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_constructor_coinstr_restore(
+        FfiConverterString.lower(`basePath`),
+        FfiConverterString.lower(`name`),
+        FfiConverterString.lower(`password`),
+        FfiConverterString.lower(`mnemonic`),
+        FfiConverterOptionString.lower(`passphrase`),
+        FfiConverterTypeNetwork.lower(`network`),$0)
 })
     }
+
     
 
     
+    
+
+    public func `name`()  -> String? {
+        return try!  FfiConverterOptionString.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_coinstr_name(self.pointer, $0
+    )
+}
+        )
+    }
+
     public func `save`() throws {
-        try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_save(self.pointer, $0
+        try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_save(self.pointer, $0
     )
 }
     }
-    public func `checkPassword`(`password`: String)  -> Bool {
-        return try! FfiConverterBool.lift(
-            try!
-    rustCall() {
-    
-    coinstr_sdk_d7d0_Coinstr_check_password(self.pointer, 
-        FfiConverterString.lower(`password`), $0
-    )
-}
-        )
-    }
-    public func `wipe`(`password`: String) throws {
-        try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_wipe(self.pointer, 
-        FfiConverterString.lower(`password`), $0
-    )
-}
-    }
-    public func `network`()  -> Network {
-        return try! FfiConverterTypeNetwork.lift(
-            try!
-    rustCall() {
-    
-    coinstr_sdk_d7d0_Coinstr_network(self.pointer, $0
-    )
-}
-        )
-    }
-    public func `addRelay`(`url`: String) throws {
-        try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_add_relay(self.pointer, 
-        FfiConverterString.lower(`url`), $0
-    )
-}
-    }
-    public func `connect`()  {
-        try!
-    rustCall() {
-    
-    coinstr_sdk_d7d0_Coinstr_connect(self.pointer, $0
-    )
-}
-    }
-    public func `addRelaysAndConnect`(`relays`: [String]) throws {
-        try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_add_relays_and_connect(self.pointer, 
-        FfiConverterSequenceString.lower(`relays`), $0
-    )
-}
-    }
-    public func `removeRelay`(`url`: String) throws {
-        try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_remove_relay(self.pointer, 
-        FfiConverterString.lower(`url`), $0
-    )
-}
-    }
-    public func `shutdown`() throws {
-        try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_shutdown(self.pointer, $0
-    )
-}
-    }
-    public func `setElectrumEndpoint`(`endpoint`: String)  {
-        try!
-    rustCall() {
-    
-    coinstr_sdk_d7d0_Coinstr_set_electrum_endpoint(self.pointer, 
-        FfiConverterString.lower(`endpoint`), $0
-    )
-}
-    }
-    public func `electrumEndpoint`() throws -> String {
-        return try FfiConverterString.lift(
-            try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_electrum_endpoint(self.pointer, $0
-    )
-}
-        )
-    }
-    public func `blockHeight`()  -> UInt32 {
-        return try! FfiConverterUInt32.lift(
-            try!
-    rustCall() {
-    
-    coinstr_sdk_d7d0_Coinstr_block_height(self.pointer, $0
-    )
-}
-        )
-    }
-    public func `addContact`(`publicKey`: String) throws {
-        try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_add_contact(self.pointer, 
-        FfiConverterString.lower(`publicKey`), $0
-    )
-}
-    }
-    public func `removeContact`(`publicKey`: String) throws {
-        try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_remove_contact(self.pointer, 
-        FfiConverterString.lower(`publicKey`), $0
-    )
-}
-    }
-    public func `getPolicyById`(`policyId`: String) throws -> Policy {
-        return try FfiConverterTypePolicy.lift(
-            try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_get_policy_by_id(self.pointer, 
-        FfiConverterString.lower(`policyId`), $0
-    )
-}
-        )
-    }
-    public func `getProposalById`(`proposalId`: String) throws -> Proposal {
-        return try FfiConverterTypeProposal.lift(
-            try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_get_proposal_by_id(self.pointer, 
-        FfiConverterString.lower(`proposalId`), $0
-    )
-}
-        )
-    }
-    public func `getCompletedProposalById`(`completedProposalId`: String) throws -> CompletedProposal {
-        return try FfiConverterTypeCompletedProposal.lift(
-            try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_get_completed_proposal_by_id(self.pointer, 
-        FfiConverterString.lower(`completedProposalId`), $0
-    )
-}
-        )
-    }
-    public func `deletePolicyById`(`policyId`: String, `timeout`: TimeInterval?) throws {
-        try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_delete_policy_by_id(self.pointer, 
-        FfiConverterString.lower(`policyId`), 
-        FfiConverterOptionDuration.lower(`timeout`), $0
-    )
-}
-    }
-    public func `deleteProposalById`(`proposalId`: String) throws {
-        try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_delete_proposal_by_id(self.pointer, 
-        FfiConverterString.lower(`proposalId`), $0
-    )
-}
-    }
-    public func `deleteCompletedProposalById`(`completedProposalId`: String) throws {
-        try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_delete_completed_proposal_by_id(self.pointer, 
-        FfiConverterString.lower(`completedProposalId`), $0
-    )
-}
-    }
-    public func `deleteSignerById`(`signerId`: String, `timeout`: TimeInterval?) throws {
-        try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_delete_signer_by_id(self.pointer, 
-        FfiConverterString.lower(`signerId`), 
-        FfiConverterOptionDuration.lower(`timeout`), $0
-    )
-}
-    }
-    public func `getPolicies`() throws -> [String: Policy] {
-        return try FfiConverterDictionaryStringTypePolicy.lift(
-            try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_get_policies(self.pointer, $0
-    )
-}
-        )
-    }
-    public func `getProposals`() throws -> [String: Proposal] {
-        return try FfiConverterDictionaryStringTypeProposal.lift(
-            try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_get_proposals(self.pointer, $0
-    )
-}
-        )
-    }
-    public func `getCompletedProposals`() throws -> [String: CompletedProposal] {
-        return try FfiConverterDictionaryStringTypeCompletedProposal.lift(
-            try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_get_completed_proposals(self.pointer, $0
-    )
-}
-        )
-    }
-    public func `spend`(`policyId`: String, `toAddress`: String, `amount`: UInt64, `description`: String, `targetBlocks`: UInt16) throws -> String {
-        return try FfiConverterString.lift(
-            try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_spend(self.pointer, 
-        FfiConverterString.lower(`policyId`), 
-        FfiConverterString.lower(`toAddress`), 
-        FfiConverterUInt64.lower(`amount`), 
-        FfiConverterString.lower(`description`), 
-        FfiConverterUInt16.lower(`targetBlocks`), $0
-    )
-}
-        )
-    }
-    public func `spendAll`(`policyId`: String, `toAddress`: String, `description`: String, `targetBlocks`: UInt16) throws -> String {
-        return try FfiConverterString.lift(
-            try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_spend_all(self.pointer, 
-        FfiConverterString.lower(`policyId`), 
-        FfiConverterString.lower(`toAddress`), 
-        FfiConverterString.lower(`description`), 
-        FfiConverterUInt16.lower(`targetBlocks`), $0
-    )
-}
-        )
-    }
-    public func `approve`(`proposalId`: String) throws -> String {
-        return try FfiConverterString.lift(
-            try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_approve(self.pointer, 
-        FfiConverterString.lower(`proposalId`), $0
-    )
-}
-        )
-    }
-    public func `approveWithSignedPsbt`(`proposalId`: String, `signedPsbt`: String) throws -> String {
-        return try FfiConverterString.lift(
-            try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_approve_with_signed_psbt(self.pointer, 
-        FfiConverterString.lower(`proposalId`), 
-        FfiConverterString.lower(`signedPsbt`), $0
-    )
-}
-        )
-    }
-    public func `finalize`(`proposalId`: String) throws -> CompletedProposal {
-        return try FfiConverterTypeCompletedProposal.lift(
-            try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_finalize(self.pointer, 
-        FfiConverterString.lower(`proposalId`), $0
-    )
-}
-        )
-    }
-    public func `rebroadcastAllEvents`() throws {
-        try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_rebroadcast_all_events(self.pointer, $0
-    )
-}
-    }
-    public func `republishSharedKeyForPolicy`(`policyId`: String) throws {
-        try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_republish_shared_key_for_policy(self.pointer, 
-        FfiConverterString.lower(`policyId`), $0
-    )
-}
-    }
-    public func `getBalance`(`policyId`: String) throws -> Balance? {
-        return try FfiConverterOptionTypeBalance.lift(
-            try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_get_balance(self.pointer, 
-        FfiConverterString.lower(`policyId`), $0
-    )
-}
-        )
-    }
-    public func `getTotalBalance`() throws -> Balance {
-        return try FfiConverterTypeBalance.lift(
-            try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_get_total_balance(self.pointer, $0
-    )
-}
-        )
-    }
-    public func `getLastUnusedAddress`(`policyId`: String) throws -> String? {
-        return try FfiConverterOptionString.lift(
-            try
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    coinstr_sdk_d7d0_Coinstr_get_last_unused_address(self.pointer, 
-        FfiConverterString.lower(`policyId`), $0
-    )
-}
-        )
-    }
-    public func `sync`()  {
-        try!
-    rustCall() {
-    
-    coinstr_sdk_d7d0_Coinstr_sync(self.pointer, $0
-    )
-}
-    }
-    
-}
 
+    public func `checkPassword`(`password`: String)  -> Bool {
+        return try!  FfiConverterBool.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_coinstr_check_password(self.pointer, 
+        FfiConverterString.lower(`password`),$0
+    )
+}
+        )
+    }
+
+    public func `wipe`(`password`: String) throws {
+        try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_wipe(self.pointer, 
+        FfiConverterString.lower(`password`),$0
+    )
+}
+    }
+
+    public func `clearCache`() throws {
+        try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_clear_cache(self.pointer, $0
+    )
+}
+    }
+
+    public func `seed`()  -> KeychainSeed {
+        return try!  FfiConverterTypeKeychainSeed.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_coinstr_seed(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `keys`()  -> Keys {
+        return try!  FfiConverterTypeKeys.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_coinstr_keys(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `network`()  -> Network {
+        return try!  FfiConverterTypeNetwork.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_coinstr_network(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `addRelay`(`url`: String) throws {
+        try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_add_relay(self.pointer, 
+        FfiConverterString.lower(`url`),$0
+    )
+}
+    }
+
+    public func `relays`()  -> [Relay] {
+        return try!  FfiConverterSequenceTypeRelay.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_coinstr_relays(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `connect`()  {
+        try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_coinstr_connect(self.pointer, $0
+    )
+}
+    }
+
+    public func `defaultRelays`()  -> [String] {
+        return try!  FfiConverterSequenceString.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_coinstr_default_relays(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `addRelaysAndConnect`(`relays`: [String]) throws {
+        try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_add_relays_and_connect(self.pointer, 
+        FfiConverterSequenceString.lower(`relays`),$0
+    )
+}
+    }
+
+    public func `removeRelay`(`url`: String) throws {
+        try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_remove_relay(self.pointer, 
+        FfiConverterString.lower(`url`),$0
+    )
+}
+    }
+
+    public func `shutdown`() throws {
+        try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_shutdown(self.pointer, $0
+    )
+}
+    }
+
+    public func `setElectrumEndpoint`(`endpoint`: String)  {
+        try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_coinstr_set_electrum_endpoint(self.pointer, 
+        FfiConverterString.lower(`endpoint`),$0
+    )
+}
+    }
+
+    public func `electrumEndpoint`() throws -> String {
+        return try  FfiConverterString.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_electrum_endpoint(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `blockHeight`()  -> UInt32 {
+        return try!  FfiConverterUInt32.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_coinstr_block_height(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `setMetadata`(`json`: String) throws {
+        try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_set_metadata(self.pointer, 
+        FfiConverterString.lower(`json`),$0
+    )
+}
+    }
+
+    public func `getProfile`() throws -> Metadata {
+        return try  FfiConverterTypeMetadata.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_get_profile(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `getContacts`() throws -> [String: Metadata] {
+        return try  FfiConverterDictionaryStringTypeMetadata.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_get_contacts(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `addContact`(`publicKey`: String) throws {
+        try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_add_contact(self.pointer, 
+        FfiConverterString.lower(`publicKey`),$0
+    )
+}
+    }
+
+    public func `removeContact`(`publicKey`: String) throws {
+        try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_remove_contact(self.pointer, 
+        FfiConverterString.lower(`publicKey`),$0
+    )
+}
+    }
+
+    public func `getPolicyById`(`policyId`: String) throws -> Policy {
+        return try  FfiConverterTypePolicy.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_get_policy_by_id(self.pointer, 
+        FfiConverterString.lower(`policyId`),$0
+    )
+}
+        )
+    }
+
+    public func `getProposalById`(`proposalId`: String) throws -> Proposal {
+        return try  FfiConverterTypeProposal.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_get_proposal_by_id(self.pointer, 
+        FfiConverterString.lower(`proposalId`),$0
+    )
+}
+        )
+    }
+
+    public func `getCompletedProposalById`(`completedProposalId`: String) throws -> CompletedProposal {
+        return try  FfiConverterTypeCompletedProposal.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_get_completed_proposal_by_id(self.pointer, 
+        FfiConverterString.lower(`completedProposalId`),$0
+    )
+}
+        )
+    }
+
+    public func `getSignerById`(`signerId`: String) throws -> Signer {
+        return try  FfiConverterTypeSigner.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_get_signer_by_id(self.pointer, 
+        FfiConverterString.lower(`signerId`),$0
+    )
+}
+        )
+    }
+
+    public func `deletePolicyById`(`policyId`: String) throws {
+        try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_delete_policy_by_id(self.pointer, 
+        FfiConverterString.lower(`policyId`),$0
+    )
+}
+    }
+
+    public func `deleteProposalById`(`proposalId`: String) throws {
+        try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_delete_proposal_by_id(self.pointer, 
+        FfiConverterString.lower(`proposalId`),$0
+    )
+}
+    }
+
+    public func `deleteCompletedProposalById`(`completedProposalId`: String) throws {
+        try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_delete_completed_proposal_by_id(self.pointer, 
+        FfiConverterString.lower(`completedProposalId`),$0
+    )
+}
+    }
+
+    public func `deleteSignerById`(`signerId`: String) throws {
+        try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_delete_signer_by_id(self.pointer, 
+        FfiConverterString.lower(`signerId`),$0
+    )
+}
+    }
+
+    public func `getPolicies`() throws -> [String: Policy] {
+        return try  FfiConverterDictionaryStringTypePolicy.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_get_policies(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `getProposals`() throws -> [String: Proposal] {
+        return try  FfiConverterDictionaryStringTypeProposal.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_get_proposals(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `getCompletedProposals`() throws -> [String: CompletedProposal] {
+        return try  FfiConverterDictionaryStringTypeCompletedProposal.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_get_completed_proposals(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `savePolicy`(`name`: String, `description`: String, `descriptor`: String, `publicKeys`: [String]) throws -> String {
+        return try  FfiConverterString.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_save_policy(self.pointer, 
+        FfiConverterString.lower(`name`),
+        FfiConverterString.lower(`description`),
+        FfiConverterString.lower(`descriptor`),
+        FfiConverterSequenceString.lower(`publicKeys`),$0
+    )
+}
+        )
+    }
+
+    public func `spend`(`policyId`: String, `toAddress`: String, `amount`: Amount, `description`: String, `targetBlocks`: UInt16) throws -> String {
+        return try  FfiConverterString.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_spend(self.pointer, 
+        FfiConverterString.lower(`policyId`),
+        FfiConverterString.lower(`toAddress`),
+        FfiConverterTypeAmount.lower(`amount`),
+        FfiConverterString.lower(`description`),
+        FfiConverterUInt16.lower(`targetBlocks`),$0
+    )
+}
+        )
+    }
+
+    public func `selfTransfer`(`fromPolicyId`: String, `toPolicyId`: String, `amount`: Amount, `targetBlocks`: UInt16) throws -> String {
+        return try  FfiConverterString.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_self_transfer(self.pointer, 
+        FfiConverterString.lower(`fromPolicyId`),
+        FfiConverterString.lower(`toPolicyId`),
+        FfiConverterTypeAmount.lower(`amount`),
+        FfiConverterUInt16.lower(`targetBlocks`),$0
+    )
+}
+        )
+    }
+
+    public func `approve`(`proposalId`: String) throws -> String {
+        return try  FfiConverterString.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_approve(self.pointer, 
+        FfiConverterString.lower(`proposalId`),$0
+    )
+}
+        )
+    }
+
+    public func `approveWithSignedPsbt`(`proposalId`: String, `signedPsbt`: String) throws -> String {
+        return try  FfiConverterString.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_approve_with_signed_psbt(self.pointer, 
+        FfiConverterString.lower(`proposalId`),
+        FfiConverterString.lower(`signedPsbt`),$0
+    )
+}
+        )
+    }
+
+    public func `revokeApproval`(`approvalId`: String) throws {
+        try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_revoke_approval(self.pointer, 
+        FfiConverterString.lower(`approvalId`),$0
+    )
+}
+    }
+
+    public func `finalize`(`proposalId`: String) throws -> CompletedProposal {
+        return try  FfiConverterTypeCompletedProposal.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_finalize(self.pointer, 
+        FfiConverterString.lower(`proposalId`),$0
+    )
+}
+        )
+    }
+
+    public func `newProofProposal`(`policyId`: String, `message`: String) throws -> String {
+        return try  FfiConverterString.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_new_proof_proposal(self.pointer, 
+        FfiConverterString.lower(`policyId`),
+        FfiConverterString.lower(`message`),$0
+    )
+}
+        )
+    }
+
+    public func `coinstrSignerExists`() throws -> Bool {
+        return try  FfiConverterBool.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_coinstr_signer_exists(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `saveCoinstrSigner`() throws -> String {
+        return try  FfiConverterString.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_save_coinstr_signer(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `rebroadcastAllEvents`() throws {
+        try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_rebroadcast_all_events(self.pointer, $0
+    )
+}
+    }
+
+    public func `republishSharedKeyForPolicy`(`policyId`: String) throws {
+        try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_republish_shared_key_for_policy(self.pointer, 
+        FfiConverterString.lower(`policyId`),$0
+    )
+}
+    }
+
+    public func `getBalance`(`policyId`: String) throws -> Balance? {
+        return try  FfiConverterOptionTypeBalance.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_get_balance(self.pointer, 
+        FfiConverterString.lower(`policyId`),$0
+    )
+}
+        )
+    }
+
+    public func `getTxs`(`policyId`: String) throws -> [TransactionDetails] {
+        return try  FfiConverterSequenceTypeTransactionDetails.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_get_txs(self.pointer, 
+        FfiConverterString.lower(`policyId`),$0
+    )
+}
+        )
+    }
+
+    public func `getUtxos`(`policyId`: String) throws -> [Utxo] {
+        return try  FfiConverterSequenceTypeUtxo.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_get_utxos(self.pointer, 
+        FfiConverterString.lower(`policyId`),$0
+    )
+}
+        )
+    }
+
+    public func `getTotalBalance`() throws -> Balance {
+        return try  FfiConverterTypeBalance.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_get_total_balance(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `getAllTxs`() throws -> [TransactionDetails] {
+        return try  FfiConverterSequenceTypeTransactionDetails.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_get_all_txs(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `getLastUnusedAddress`(`policyId`: String) throws -> String? {
+        return try  FfiConverterOptionString.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_coinstr_get_last_unused_address(self.pointer, 
+        FfiConverterString.lower(`policyId`),$0
+    )
+}
+        )
+    }
+
+    public func `sync`()  {
+        try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_coinstr_sync(self.pointer, $0
+    )
+}
+    }
+}
 
 public struct FfiConverterTypeCoinstr: FfiConverter {
     typealias FfiType = UnsafeMutableRawPointer
@@ -936,10 +1340,404 @@ public struct FfiConverterTypeCoinstr: FfiConverter {
 }
 
 
+public func FfiConverterTypeCoinstr_lift(_ pointer: UnsafeMutableRawPointer) throws -> Coinstr {
+    return try FfiConverterTypeCoinstr.lift(pointer)
+}
+
+public func FfiConverterTypeCoinstr_lower(_ value: Coinstr) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeCoinstr.lower(value)
+}
+
+
+public protocol KeychainSeedProtocol {
+    func `mnemonic`()   -> String
+    func `passphrase`()   -> String?
+    
+}
+
+public class KeychainSeed: KeychainSeedProtocol {
+    fileprivate let pointer: UnsafeMutableRawPointer
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+    required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        self.pointer = pointer
+    }
+
+    deinit {
+        try! rustCall { uniffi_coinstr_sdk_fn_free_keychainseed(pointer, $0) }
+    }
+
+    
+
+    
+    
+
+    public func `mnemonic`()  -> String {
+        return try!  FfiConverterString.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_keychainseed_mnemonic(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `passphrase`()  -> String? {
+        return try!  FfiConverterOptionString.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_keychainseed_passphrase(self.pointer, $0
+    )
+}
+        )
+    }
+}
+
+public struct FfiConverterTypeKeychainSeed: FfiConverter {
+    typealias FfiType = UnsafeMutableRawPointer
+    typealias SwiftType = KeychainSeed
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> KeychainSeed {
+        let v: UInt64 = try readInt(&buf)
+        // The Rust code won't compile if a pointer won't fit in a UInt64.
+        // We have to go via `UInt` because that's the thing that's the size of a pointer.
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
+        if (ptr == nil) {
+            throw UniffiInternalError.unexpectedNullPointer
+        }
+        return try lift(ptr!)
+    }
+
+    public static func write(_ value: KeychainSeed, into buf: inout [UInt8]) {
+        // This fiddling is because `Int` is the thing that's the same size as a pointer.
+        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
+        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+    }
+
+    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> KeychainSeed {
+        return KeychainSeed(unsafeFromRawPointer: pointer)
+    }
+
+    public static func lower(_ value: KeychainSeed) -> UnsafeMutableRawPointer {
+        return value.pointer
+    }
+}
+
+
+public func FfiConverterTypeKeychainSeed_lift(_ pointer: UnsafeMutableRawPointer) throws -> KeychainSeed {
+    return try FfiConverterTypeKeychainSeed.lift(pointer)
+}
+
+public func FfiConverterTypeKeychainSeed_lower(_ value: KeychainSeed) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeKeychainSeed.lower(value)
+}
+
+
+public protocol KeysProtocol {
+    func `publicKey`()   -> String
+    func `publicKeyBech32`()  throws -> String
+    func `secretKey`()  throws -> String
+    func `secretKeyBech32`()  throws -> String
+    
+}
+
+public class Keys: KeysProtocol {
+    fileprivate let pointer: UnsafeMutableRawPointer
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+    required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        self.pointer = pointer
+    }
+
+    deinit {
+        try! rustCall { uniffi_coinstr_sdk_fn_free_keys(pointer, $0) }
+    }
+
+    
+
+    
+    
+
+    public func `publicKey`()  -> String {
+        return try!  FfiConverterString.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_keys_public_key(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `publicKeyBech32`() throws -> String {
+        return try  FfiConverterString.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_keys_public_key_bech32(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `secretKey`() throws -> String {
+        return try  FfiConverterString.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_keys_secret_key(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `secretKeyBech32`() throws -> String {
+        return try  FfiConverterString.lift(
+            try 
+    rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_method_keys_secret_key_bech32(self.pointer, $0
+    )
+}
+        )
+    }
+}
+
+public struct FfiConverterTypeKeys: FfiConverter {
+    typealias FfiType = UnsafeMutableRawPointer
+    typealias SwiftType = Keys
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Keys {
+        let v: UInt64 = try readInt(&buf)
+        // The Rust code won't compile if a pointer won't fit in a UInt64.
+        // We have to go via `UInt` because that's the thing that's the size of a pointer.
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
+        if (ptr == nil) {
+            throw UniffiInternalError.unexpectedNullPointer
+        }
+        return try lift(ptr!)
+    }
+
+    public static func write(_ value: Keys, into buf: inout [UInt8]) {
+        // This fiddling is because `Int` is the thing that's the same size as a pointer.
+        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
+        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+    }
+
+    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> Keys {
+        return Keys(unsafeFromRawPointer: pointer)
+    }
+
+    public static func lower(_ value: Keys) -> UnsafeMutableRawPointer {
+        return value.pointer
+    }
+}
+
+
+public func FfiConverterTypeKeys_lift(_ pointer: UnsafeMutableRawPointer) throws -> Keys {
+    return try FfiConverterTypeKeys.lift(pointer)
+}
+
+public func FfiConverterTypeKeys_lower(_ value: Keys) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeKeys.lower(value)
+}
+
+
+public protocol MetadataProtocol {
+    func `name`()   -> String?
+    func `displayName`()   -> String?
+    func `nip05`()   -> String?
+    
+}
+
+public class Metadata: MetadataProtocol {
+    fileprivate let pointer: UnsafeMutableRawPointer
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+    required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        self.pointer = pointer
+    }
+
+    deinit {
+        try! rustCall { uniffi_coinstr_sdk_fn_free_metadata(pointer, $0) }
+    }
+
+    
+
+    
+    
+
+    public func `name`()  -> String? {
+        return try!  FfiConverterOptionString.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_metadata_name(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `displayName`()  -> String? {
+        return try!  FfiConverterOptionString.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_metadata_display_name(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `nip05`()  -> String? {
+        return try!  FfiConverterOptionString.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_metadata_nip05(self.pointer, $0
+    )
+}
+        )
+    }
+}
+
+public struct FfiConverterTypeMetadata: FfiConverter {
+    typealias FfiType = UnsafeMutableRawPointer
+    typealias SwiftType = Metadata
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Metadata {
+        let v: UInt64 = try readInt(&buf)
+        // The Rust code won't compile if a pointer won't fit in a UInt64.
+        // We have to go via `UInt` because that's the thing that's the size of a pointer.
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
+        if (ptr == nil) {
+            throw UniffiInternalError.unexpectedNullPointer
+        }
+        return try lift(ptr!)
+    }
+
+    public static func write(_ value: Metadata, into buf: inout [UInt8]) {
+        // This fiddling is because `Int` is the thing that's the same size as a pointer.
+        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
+        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+    }
+
+    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> Metadata {
+        return Metadata(unsafeFromRawPointer: pointer)
+    }
+
+    public static func lower(_ value: Metadata) -> UnsafeMutableRawPointer {
+        return value.pointer
+    }
+}
+
+
+public func FfiConverterTypeMetadata_lift(_ pointer: UnsafeMutableRawPointer) throws -> Metadata {
+    return try FfiConverterTypeMetadata.lift(pointer)
+}
+
+public func FfiConverterTypeMetadata_lower(_ value: Metadata) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeMetadata.lower(value)
+}
+
+
+public protocol OutPointProtocol {
+    func `txid`()   -> String
+    func `vout`()   -> UInt32
+    
+}
+
+public class OutPoint: OutPointProtocol {
+    fileprivate let pointer: UnsafeMutableRawPointer
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+    required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        self.pointer = pointer
+    }
+
+    deinit {
+        try! rustCall { uniffi_coinstr_sdk_fn_free_outpoint(pointer, $0) }
+    }
+
+    
+
+    
+    
+
+    public func `txid`()  -> String {
+        return try!  FfiConverterString.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_outpoint_txid(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `vout`()  -> UInt32 {
+        return try!  FfiConverterUInt32.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_outpoint_vout(self.pointer, $0
+    )
+}
+        )
+    }
+}
+
+public struct FfiConverterTypeOutPoint: FfiConverter {
+    typealias FfiType = UnsafeMutableRawPointer
+    typealias SwiftType = OutPoint
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OutPoint {
+        let v: UInt64 = try readInt(&buf)
+        // The Rust code won't compile if a pointer won't fit in a UInt64.
+        // We have to go via `UInt` because that's the thing that's the size of a pointer.
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
+        if (ptr == nil) {
+            throw UniffiInternalError.unexpectedNullPointer
+        }
+        return try lift(ptr!)
+    }
+
+    public static func write(_ value: OutPoint, into buf: inout [UInt8]) {
+        // This fiddling is because `Int` is the thing that's the same size as a pointer.
+        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
+        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+    }
+
+    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> OutPoint {
+        return OutPoint(unsafeFromRawPointer: pointer)
+    }
+
+    public static func lower(_ value: OutPoint) -> UnsafeMutableRawPointer {
+        return value.pointer
+    }
+}
+
+
+public func FfiConverterTypeOutPoint_lift(_ pointer: UnsafeMutableRawPointer) throws -> OutPoint {
+    return try FfiConverterTypeOutPoint.lift(pointer)
+}
+
+public func FfiConverterTypeOutPoint_lower(_ value: OutPoint) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeOutPoint.lower(value)
+}
+
+
 public protocol PolicyProtocol {
-    func `name`()  -> String
-    func `description`()  -> String
-    func `descriptor`()  -> String
+    func `name`()   -> String
+    func `description`()   -> String
+    func `descriptor`()   -> String
     
 }
 
@@ -954,45 +1752,47 @@ public class Policy: PolicyProtocol {
     }
 
     deinit {
-        try! rustCall { ffi_coinstr_sdk_d7d0_Policy_object_free(pointer, $0) }
+        try! rustCall { uniffi_coinstr_sdk_fn_free_policy(pointer, $0) }
     }
 
     
 
     
+    
+
     public func `name`()  -> String {
-        return try! FfiConverterString.lift(
-            try!
+        return try!  FfiConverterString.lift(
+            try! 
     rustCall() {
     
-    coinstr_sdk_d7d0_Policy_name(self.pointer, $0
+    uniffi_coinstr_sdk_fn_method_policy_name(self.pointer, $0
     )
 }
         )
     }
-    public func `description`()  -> String {
-        return try! FfiConverterString.lift(
-            try!
-    rustCall() {
-    
-    coinstr_sdk_d7d0_Policy_description(self.pointer, $0
-    )
-}
-        )
-    }
-    public func `descriptor`()  -> String {
-        return try! FfiConverterString.lift(
-            try!
-    rustCall() {
-    
-    coinstr_sdk_d7d0_Policy_descriptor(self.pointer, $0
-    )
-}
-        )
-    }
-    
-}
 
+    public func `description`()  -> String {
+        return try!  FfiConverterString.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_policy_description(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `descriptor`()  -> String {
+        return try!  FfiConverterString.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_policy_descriptor(self.pointer, $0
+    )
+}
+        )
+    }
+}
 
 public struct FfiConverterTypePolicy: FfiConverter {
     typealias FfiType = UnsafeMutableRawPointer
@@ -1022,6 +1822,463 @@ public struct FfiConverterTypePolicy: FfiConverter {
     public static func lower(_ value: Policy) -> UnsafeMutableRawPointer {
         return value.pointer
     }
+}
+
+
+public func FfiConverterTypePolicy_lift(_ pointer: UnsafeMutableRawPointer) throws -> Policy {
+    return try FfiConverterTypePolicy.lift(pointer)
+}
+
+public func FfiConverterTypePolicy_lower(_ value: Policy) -> UnsafeMutableRawPointer {
+    return FfiConverterTypePolicy.lower(value)
+}
+
+
+public protocol RelayProtocol {
+    func `url`()   -> String
+    func `status`()   -> RelayStatus
+    func `isConnected`()   -> Bool
+    
+}
+
+public class Relay: RelayProtocol {
+    fileprivate let pointer: UnsafeMutableRawPointer
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+    required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        self.pointer = pointer
+    }
+
+    deinit {
+        try! rustCall { uniffi_coinstr_sdk_fn_free_relay(pointer, $0) }
+    }
+
+    
+
+    
+    
+
+    public func `url`()  -> String {
+        return try!  FfiConverterString.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_relay_url(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `status`()  -> RelayStatus {
+        return try!  FfiConverterTypeRelayStatus.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_relay_status(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `isConnected`()  -> Bool {
+        return try!  FfiConverterBool.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_relay_is_connected(self.pointer, $0
+    )
+}
+        )
+    }
+}
+
+public struct FfiConverterTypeRelay: FfiConverter {
+    typealias FfiType = UnsafeMutableRawPointer
+    typealias SwiftType = Relay
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Relay {
+        let v: UInt64 = try readInt(&buf)
+        // The Rust code won't compile if a pointer won't fit in a UInt64.
+        // We have to go via `UInt` because that's the thing that's the size of a pointer.
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
+        if (ptr == nil) {
+            throw UniffiInternalError.unexpectedNullPointer
+        }
+        return try lift(ptr!)
+    }
+
+    public static func write(_ value: Relay, into buf: inout [UInt8]) {
+        // This fiddling is because `Int` is the thing that's the same size as a pointer.
+        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
+        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+    }
+
+    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> Relay {
+        return Relay(unsafeFromRawPointer: pointer)
+    }
+
+    public static func lower(_ value: Relay) -> UnsafeMutableRawPointer {
+        return value.pointer
+    }
+}
+
+
+public func FfiConverterTypeRelay_lift(_ pointer: UnsafeMutableRawPointer) throws -> Relay {
+    return try FfiConverterTypeRelay.lift(pointer)
+}
+
+public func FfiConverterTypeRelay_lower(_ value: Relay) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeRelay.lower(value)
+}
+
+
+public protocol SignerProtocol {
+    func `name`()   -> String
+    func `fingerprint`()   -> String
+    func `descriptor`()   -> String
+    func `signerType`()   -> SignerType
+    func `toString`()   -> String
+    
+}
+
+public class Signer: SignerProtocol {
+    fileprivate let pointer: UnsafeMutableRawPointer
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+    required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        self.pointer = pointer
+    }
+
+    deinit {
+        try! rustCall { uniffi_coinstr_sdk_fn_free_signer(pointer, $0) }
+    }
+
+    
+
+    
+    
+
+    public func `name`()  -> String {
+        return try!  FfiConverterString.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_signer_name(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `fingerprint`()  -> String {
+        return try!  FfiConverterString.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_signer_fingerprint(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `descriptor`()  -> String {
+        return try!  FfiConverterString.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_signer_descriptor(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `signerType`()  -> SignerType {
+        return try!  FfiConverterTypeSignerType.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_signer_signer_type(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `toString`()  -> String {
+        return try!  FfiConverterString.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_signer_to_string(self.pointer, $0
+    )
+}
+        )
+    }
+}
+
+public struct FfiConverterTypeSigner: FfiConverter {
+    typealias FfiType = UnsafeMutableRawPointer
+    typealias SwiftType = Signer
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Signer {
+        let v: UInt64 = try readInt(&buf)
+        // The Rust code won't compile if a pointer won't fit in a UInt64.
+        // We have to go via `UInt` because that's the thing that's the size of a pointer.
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
+        if (ptr == nil) {
+            throw UniffiInternalError.unexpectedNullPointer
+        }
+        return try lift(ptr!)
+    }
+
+    public static func write(_ value: Signer, into buf: inout [UInt8]) {
+        // This fiddling is because `Int` is the thing that's the same size as a pointer.
+        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
+        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+    }
+
+    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> Signer {
+        return Signer(unsafeFromRawPointer: pointer)
+    }
+
+    public static func lower(_ value: Signer) -> UnsafeMutableRawPointer {
+        return value.pointer
+    }
+}
+
+
+public func FfiConverterTypeSigner_lift(_ pointer: UnsafeMutableRawPointer) throws -> Signer {
+    return try FfiConverterTypeSigner.lift(pointer)
+}
+
+public func FfiConverterTypeSigner_lower(_ value: Signer) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeSigner.lower(value)
+}
+
+
+public protocol TransactionDetailsProtocol {
+    func `fee`()   -> UInt64?
+    func `received`()   -> UInt64
+    func `sent`()   -> UInt64
+    func `txid`()   -> String
+    func `confirmationTime`()   -> BlockTime?
+    
+}
+
+public class TransactionDetails: TransactionDetailsProtocol {
+    fileprivate let pointer: UnsafeMutableRawPointer
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+    required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        self.pointer = pointer
+    }
+
+    deinit {
+        try! rustCall { uniffi_coinstr_sdk_fn_free_transactiondetails(pointer, $0) }
+    }
+
+    
+
+    
+    
+
+    public func `fee`()  -> UInt64? {
+        return try!  FfiConverterOptionUInt64.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_transactiondetails_fee(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `received`()  -> UInt64 {
+        return try!  FfiConverterUInt64.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_transactiondetails_received(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `sent`()  -> UInt64 {
+        return try!  FfiConverterUInt64.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_transactiondetails_sent(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `txid`()  -> String {
+        return try!  FfiConverterString.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_transactiondetails_txid(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `confirmationTime`()  -> BlockTime? {
+        return try!  FfiConverterOptionTypeBlockTime.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_transactiondetails_confirmation_time(self.pointer, $0
+    )
+}
+        )
+    }
+}
+
+public struct FfiConverterTypeTransactionDetails: FfiConverter {
+    typealias FfiType = UnsafeMutableRawPointer
+    typealias SwiftType = TransactionDetails
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TransactionDetails {
+        let v: UInt64 = try readInt(&buf)
+        // The Rust code won't compile if a pointer won't fit in a UInt64.
+        // We have to go via `UInt` because that's the thing that's the size of a pointer.
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
+        if (ptr == nil) {
+            throw UniffiInternalError.unexpectedNullPointer
+        }
+        return try lift(ptr!)
+    }
+
+    public static func write(_ value: TransactionDetails, into buf: inout [UInt8]) {
+        // This fiddling is because `Int` is the thing that's the same size as a pointer.
+        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
+        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+    }
+
+    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> TransactionDetails {
+        return TransactionDetails(unsafeFromRawPointer: pointer)
+    }
+
+    public static func lower(_ value: TransactionDetails) -> UnsafeMutableRawPointer {
+        return value.pointer
+    }
+}
+
+
+public func FfiConverterTypeTransactionDetails_lift(_ pointer: UnsafeMutableRawPointer) throws -> TransactionDetails {
+    return try FfiConverterTypeTransactionDetails.lift(pointer)
+}
+
+public func FfiConverterTypeTransactionDetails_lower(_ value: TransactionDetails) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeTransactionDetails.lower(value)
+}
+
+
+public protocol UtxoProtocol {
+    func `outpoint`()   -> OutPoint
+    func `value`()   -> UInt64
+    func `isSpent`()   -> Bool
+    
+}
+
+public class Utxo: UtxoProtocol {
+    fileprivate let pointer: UnsafeMutableRawPointer
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+    required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        self.pointer = pointer
+    }
+
+    deinit {
+        try! rustCall { uniffi_coinstr_sdk_fn_free_utxo(pointer, $0) }
+    }
+
+    
+
+    
+    
+
+    public func `outpoint`()  -> OutPoint {
+        return try!  FfiConverterTypeOutPoint.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_utxo_outpoint(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `value`()  -> UInt64 {
+        return try!  FfiConverterUInt64.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_utxo_value(self.pointer, $0
+    )
+}
+        )
+    }
+
+    public func `isSpent`()  -> Bool {
+        return try!  FfiConverterBool.lift(
+            try! 
+    rustCall() {
+    
+    uniffi_coinstr_sdk_fn_method_utxo_is_spent(self.pointer, $0
+    )
+}
+        )
+    }
+}
+
+public struct FfiConverterTypeUtxo: FfiConverter {
+    typealias FfiType = UnsafeMutableRawPointer
+    typealias SwiftType = Utxo
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Utxo {
+        let v: UInt64 = try readInt(&buf)
+        // The Rust code won't compile if a pointer won't fit in a UInt64.
+        // We have to go via `UInt` because that's the thing that's the size of a pointer.
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
+        if (ptr == nil) {
+            throw UniffiInternalError.unexpectedNullPointer
+        }
+        return try lift(ptr!)
+    }
+
+    public static func write(_ value: Utxo, into buf: inout [UInt8]) {
+        // This fiddling is because `Int` is the thing that's the same size as a pointer.
+        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
+        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+    }
+
+    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> Utxo {
+        return Utxo(unsafeFromRawPointer: pointer)
+    }
+
+    public static func lower(_ value: Utxo) -> UnsafeMutableRawPointer {
+        return value.pointer
+    }
+}
+
+
+public func FfiConverterTypeUtxo_lift(_ pointer: UnsafeMutableRawPointer) throws -> Utxo {
+    return try FfiConverterTypeUtxo.lift(pointer)
+}
+
+public func FfiConverterTypeUtxo_lower(_ value: Utxo) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeUtxo.lower(value)
 }
 
 // Note that we don't yet support `indirect` for enums.
@@ -1087,6 +2344,130 @@ public func FfiConverterTypeCompletedProposal_lower(_ value: CompletedProposal) 
 extension CompletedProposal: Equatable, Hashable {}
 
 
+
+public enum FfiError {
+
+    
+    
+    case Generic(`err`: String)
+
+    fileprivate static func uniffiErrorHandler(_ error: RustBuffer) throws -> Error {
+        return try FfiConverterTypeFFIError.lift(error)
+    }
+}
+
+
+public struct FfiConverterTypeFFIError: FfiConverterRustBuffer {
+    typealias SwiftType = FfiError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .Generic(
+            `err`: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: FfiError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .Generic(`err`):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(`err`, into: &buf)
+            
+        }
+    }
+}
+
+
+extension FfiError: Equatable, Hashable {}
+
+extension FfiError: Error { }
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+public enum LogLevel {
+    
+    case `error`
+    case `warn`
+    case `info`
+    case `debug`
+    case `trace`
+}
+
+public struct FfiConverterTypeLogLevel: FfiConverterRustBuffer {
+    typealias SwiftType = LogLevel
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LogLevel {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .`error`
+        
+        case 2: return .`warn`
+        
+        case 3: return .`info`
+        
+        case 4: return .`debug`
+        
+        case 5: return .`trace`
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: LogLevel, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .`error`:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .`warn`:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .`info`:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .`debug`:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .`trace`:
+            writeInt(&buf, Int32(5))
+        
+        }
+    }
+}
+
+
+public func FfiConverterTypeLogLevel_lift(_ buf: RustBuffer) throws -> LogLevel {
+    return try FfiConverterTypeLogLevel.lift(buf)
+}
+
+public func FfiConverterTypeLogLevel_lower(_ value: LogLevel) -> RustBuffer {
+    return FfiConverterTypeLogLevel.lower(value)
+}
+
+
+extension LogLevel: Equatable, Hashable {}
+
+
+
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 public enum Network {
@@ -1150,6 +2531,7 @@ public func FfiConverterTypeNetwork_lower(_ value: Network) -> RustBuffer {
 
 
 extension Network: Equatable, Hashable {}
+
 
 
 // Note that we don't yet support `indirect` for enums.
@@ -1221,6 +2603,146 @@ public func FfiConverterTypeProposal_lower(_ value: Proposal) -> RustBuffer {
 extension Proposal: Equatable, Hashable {}
 
 
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+public enum RelayStatus {
+    
+    case `initialized`
+    case `connected`
+    case `connecting`
+    case `disconnected`
+    case `stopped`
+    case `terminated`
+}
+
+public struct FfiConverterTypeRelayStatus: FfiConverterRustBuffer {
+    typealias SwiftType = RelayStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RelayStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .`initialized`
+        
+        case 2: return .`connected`
+        
+        case 3: return .`connecting`
+        
+        case 4: return .`disconnected`
+        
+        case 5: return .`stopped`
+        
+        case 6: return .`terminated`
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: RelayStatus, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .`initialized`:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .`connected`:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .`connecting`:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .`disconnected`:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .`stopped`:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .`terminated`:
+            writeInt(&buf, Int32(6))
+        
+        }
+    }
+}
+
+
+public func FfiConverterTypeRelayStatus_lift(_ buf: RustBuffer) throws -> RelayStatus {
+    return try FfiConverterTypeRelayStatus.lift(buf)
+}
+
+public func FfiConverterTypeRelayStatus_lower(_ value: RelayStatus) -> RustBuffer {
+    return FfiConverterTypeRelayStatus.lower(value)
+}
+
+
+extension RelayStatus: Equatable, Hashable {}
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+public enum SignerType {
+    
+    case `seed`
+    case `hardware`
+    case `airGap`
+}
+
+public struct FfiConverterTypeSignerType: FfiConverterRustBuffer {
+    typealias SwiftType = SignerType
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SignerType {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .`seed`
+        
+        case 2: return .`hardware`
+        
+        case 3: return .`airGap`
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: SignerType, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .`seed`:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .`hardware`:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .`airGap`:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+public func FfiConverterTypeSignerType_lift(_ buf: RustBuffer) throws -> SignerType {
+    return try FfiConverterTypeSignerType.lift(buf)
+}
+
+public func FfiConverterTypeSignerType_lower(_ value: SignerType) -> RustBuffer {
+    return FfiConverterTypeSignerType.lower(value)
+}
+
+
+extension SignerType: Equatable, Hashable {}
+
+
+
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 public enum WordCount {
@@ -1280,50 +2802,26 @@ extension WordCount: Equatable, Hashable {}
 
 
 
-public enum FfiError {
+fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
+    typealias SwiftType = UInt64?
 
-    
-    
-    case Generic(`err`: String)
-}
-
-public struct FfiConverterTypeFfiError: FfiConverterRustBuffer {
-    typealias SwiftType = FfiError
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiError {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-
-        
-
-        
-        case 1: return .Generic(
-            `err`: try FfiConverterString.read(from: &buf)
-            )
-
-         default: throw UniffiInternalError.unexpectedEnumCase
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
         }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt64.write(value, into: &buf)
     }
 
-    public static func write(_ value: FfiError, into buf: inout [UInt8]) {
-        switch value {
-
-        
-
-        
-        
-        case let .Generic(`err`):
-            writeInt(&buf, Int32(1))
-            FfiConverterString.write(`err`, into: &buf)
-            
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
 }
-
-
-extension FfiError: Equatable, Hashable {}
-
-extension FfiError: Error { }
 
 fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
     typealias SwiftType = String?
@@ -1341,27 +2839,6 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterString.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
-}
-
-fileprivate struct FfiConverterOptionDuration: FfiConverterRustBuffer {
-    typealias SwiftType = TimeInterval?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterDuration.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterDuration.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -1388,6 +2865,27 @@ fileprivate struct FfiConverterOptionTypeBalance: FfiConverterRustBuffer {
     }
 }
 
+fileprivate struct FfiConverterOptionTypeBlockTime: FfiConverterRustBuffer {
+    typealias SwiftType = BlockTime?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeBlockTime.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeBlockTime.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -1407,6 +2905,95 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
             seq.append(try FfiConverterString.read(from: &buf))
         }
         return seq
+    }
+}
+
+fileprivate struct FfiConverterSequenceTypeRelay: FfiConverterRustBuffer {
+    typealias SwiftType = [Relay]
+
+    public static func write(_ value: [Relay], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeRelay.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Relay] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Relay]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeRelay.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+fileprivate struct FfiConverterSequenceTypeTransactionDetails: FfiConverterRustBuffer {
+    typealias SwiftType = [TransactionDetails]
+
+    public static func write(_ value: [TransactionDetails], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeTransactionDetails.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [TransactionDetails] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [TransactionDetails]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeTransactionDetails.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+fileprivate struct FfiConverterSequenceTypeUtxo: FfiConverterRustBuffer {
+    typealias SwiftType = [Utxo]
+
+    public static func write(_ value: [Utxo], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeUtxo.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Utxo] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Utxo]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeUtxo.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+fileprivate struct FfiConverterDictionaryStringTypeMetadata: FfiConverterRustBuffer {
+    public static func write(_ value: [String: Metadata], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for (key, value) in value {
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterTypeMetadata.write(value, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String: Metadata] {
+        let len: Int32 = try readInt(&buf)
+        var dict = [String: Metadata]()
+        dict.reserveCapacity(Int(len))
+        for _ in 0..<len {
+            let key = try FfiConverterString.read(from: &buf)
+            let value = try FfiConverterTypeMetadata.read(from: &buf)
+            dict[key] = value
+        }
+        return dict
     }
 }
 
@@ -1479,30 +3066,333 @@ fileprivate struct FfiConverterDictionaryStringTypeProposal: FfiConverterRustBuf
     }
 }
 
+public func `initLogger`(`level`: LogLevel)  {
+    try! rustCall() {
+    uniffi_coinstr_sdk_fn_func_init_logger(
+        FfiConverterTypeLogLevel.lower(`level`),$0)
+}
+}
+
+
+
 public func `getKeychainsList`(`basePath`: String, `network`: Network) throws -> [String] {
-    return try FfiConverterSequenceString.lift(
-        try
-    
-    rustCallWithError(FfiConverterTypeFfiError.self) {
-    
-    coinstr_sdk_d7d0_get_keychains_list(
-        FfiConverterString.lower(`basePath`), 
-        FfiConverterTypeNetwork.lower(`network`), $0)
+    return try  FfiConverterSequenceString.lift(
+        try rustCallWithError(FfiConverterTypeFFIError.lift) {
+    uniffi_coinstr_sdk_fn_func_get_keychains_list(
+        FfiConverterString.lower(`basePath`),
+        FfiConverterTypeNetwork.lower(`network`),$0)
 }
     )
 }
 
+private enum InitializationResult {
+    case ok
+    case contractVersionMismatch
+    case apiChecksumMismatch
+}
+// Use a global variables to perform the versioning checks. Swift ensures that
+// the code inside is only computed once.
+private var initializationResult: InitializationResult {
+    // Get the bindings contract version from our ComponentInterface
+    let bindings_contract_version = 22
+    // Get the scaffolding contract version by calling the into the dylib
+    let scaffolding_contract_version = ffi_coinstr_sdk_uniffi_contract_version()
+    if bindings_contract_version != scaffolding_contract_version {
+        return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_func_init_logger() != 30934) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_func_get_keychains_list() != 45373) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_relay_url() != 59400) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_relay_status() != 14830) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_relay_is_connected() != 62752) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_outpoint_txid() != 1873) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_outpoint_vout() != 7239) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_utxo_outpoint() != 61510) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_utxo_value() != 55160) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_utxo_is_spent() != 1019) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_balance_get_spendable() != 58615) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_balance_get_total() != 65405) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_transactiondetails_fee() != 5419) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_transactiondetails_received() != 51332) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_transactiondetails_sent() != 23011) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_transactiondetails_txid() != 63760) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_transactiondetails_confirmation_time() != 47124) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_blocktime_height() != 40876) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_blocktime_timestamp() != 40403) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_keychainseed_mnemonic() != 18780) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_keychainseed_passphrase() != 19107) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_keys_public_key() != 35328) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_keys_public_key_bech32() != 49804) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_keys_secret_key() != 13840) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_keys_secret_key_bech32() != 30424) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_metadata_name() != 7557) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_metadata_display_name() != 17024) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_metadata_nip05() != 62643) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_policy_name() != 117) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_policy_description() != 48978) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_policy_descriptor() != 34944) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_signer_name() != 42456) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_signer_fingerprint() != 14699) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_signer_descriptor() != 32257) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_signer_signer_type() != 40384) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_signer_to_string() != 61394) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_name() != 55413) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_save() != 20839) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_check_password() != 46259) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_wipe() != 39042) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_clear_cache() != 18269) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_seed() != 50713) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_keys() != 12729) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_network() != 29872) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_add_relay() != 37737) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_relays() != 50113) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_connect() != 26432) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_default_relays() != 51286) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_add_relays_and_connect() != 49923) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_remove_relay() != 4739) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_shutdown() != 35592) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_set_electrum_endpoint() != 36483) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_electrum_endpoint() != 37032) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_block_height() != 39597) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_set_metadata() != 17790) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_get_profile() != 7533) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_get_contacts() != 32395) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_add_contact() != 55793) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_remove_contact() != 47852) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_get_policy_by_id() != 35705) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_get_proposal_by_id() != 42106) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_get_completed_proposal_by_id() != 57153) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_get_signer_by_id() != 33734) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_delete_policy_by_id() != 40385) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_delete_proposal_by_id() != 48874) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_delete_completed_proposal_by_id() != 7679) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_delete_signer_by_id() != 9610) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_get_policies() != 59038) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_get_proposals() != 60824) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_get_completed_proposals() != 212) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_save_policy() != 57583) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_spend() != 28089) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_self_transfer() != 19876) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_approve() != 7485) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_approve_with_signed_psbt() != 36932) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_revoke_approval() != 1351) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_finalize() != 6389) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_new_proof_proposal() != 45967) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_coinstr_signer_exists() != 25562) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_save_coinstr_signer() != 46082) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_rebroadcast_all_events() != 49413) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_republish_shared_key_for_policy() != 52536) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_get_balance() != 38004) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_get_txs() != 55645) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_get_utxos() != 19960) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_get_total_balance() != 27369) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_get_all_txs() != 1319) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_get_last_unused_address() != 63775) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_method_coinstr_sync() != 15473) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_constructor_amount_custom() != 20595) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_constructor_amount_max() != 40109) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_constructor_coinstr_open() != 45165) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_constructor_coinstr_generate() != 51692) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_coinstr_sdk_checksum_constructor_coinstr_restore() != 56328) {
+        return InitializationResult.apiChecksumMismatch
+    }
 
+    return InitializationResult.ok
+}
 
-/**
- * Top level initializers and tear down methods.
- *
- * This is generated by uniffi.
- */
-public enum CoinstrSdkLifecycle {
-    /**
-     * Initialize the FFI and Rust library. This should be only called once per application.
-     */
-    func initialize() {
+private func uniffiEnsureInitialized() {
+    switch initializationResult {
+    case .ok:
+        break
+    case .contractVersionMismatch:
+        fatalError("UniFFI contract version mismatch: try cleaning and rebuilding your project")
+    case .apiChecksumMismatch:
+        fatalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
 }
