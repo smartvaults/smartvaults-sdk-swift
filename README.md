@@ -19,7 +19,7 @@ as a package dependency in Xcode.
 Add the following to the dependencies array in your `Package.swift`:
 
 ``` swift
-.package(url: "https://github.com/coinstr/coinstr-sdk-swift.git", from: "0.0.2"),
+.package(url: "https://github.com/coinstr/coinstr-sdk-swift.git", from: "0.3.0"),
 ```
 
 ## 📄 Usage
@@ -35,11 +35,6 @@ let coinstr = try Coinstr.restore(basePath: "/path/to/internal/storage", name: "
 
 // Open a keychain
 let coinstr = try Coinstr.open(basePath: "/path/to/internal/storage", name: "keychain-name", password: "keychain-password", network: Network.testnet);
-
-// Complete client configuration (methods that MUST be called)
-try coinstr.setElectrumEndpoint(endpoint: "...");
-try coinstr.addRelaysAndConnect(relays: ["wss://relay.house", "..."]);
-coinstr.sync();
 
 // Get policies and proposals
 let policies = try coinstr.getPolicies();
