@@ -41,9 +41,10 @@ let policies = try coinstr.getPolicies();
 let proposals = try coinstr.getProposals();
 
 // Create a new proposal
-let proposalId = try coinstr.spend(policyId: "...", toAddress: "address", amount: 1234, description: "Back to faucet", targetBlocks: 3);
-// or
-let proposalId = try coinstr.spendAll(policyId: "...", toAddress: "address", description: "Back to faucet", targetBlocks: 3);
+let amount = Amount.custom(1234);
+// OR
+let amount = Amount.max();
+let proposalId = try coinstr.spend(policyId: "...", toAddress: "address", amount: amount, description: "Back to faucet", targetBlocks: 3);
 
 // Approve a proposal
 try coinstr.approve(proposalId: proposalId);
