@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'coinstr-sdk repo release (MAJOR.MINOR.PATCH)'
+        description: 'smartvaults-sdk repo release (MAJOR.MINOR.PATCH)'
         required: true
         type: string
 
@@ -14,35 +14,35 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout coinstr repo
+      - name: Checkout smartvaults repo
         uses: actions/checkout@v3
         with:
-          repository: ${{ github.repository_owner }}/coinstr
+          repository: ${{ github.repository_owner }}/smartvaults
           path: build
           ref: v${{ inputs.version }}
 
-      - name: Checkout coinstr-sdk-swift repo
+      - name: Checkout smartvaults-sdk-swift repo
         uses: actions/checkout@v3
         with:
           path: dist
           ssh-key: ${{ secrets.REPO_SSH_KEY }}
 
       - name: Build Swift bindings
-        working-directory: build/bindings/coinstr-sdk-ffi
+        working-directory: build/bindings/smartvaults-sdk-ffi
         run: |
           make init
           make bindings-swift
 
       - name: Compress XCFramework
-        working-directory: build/bindings/coinstr-sdk-ffi/bindings-swift
+        working-directory: build/bindings/smartvaults-sdk-ffi/bindings-swift
         run: |
-          zip -9 -r coinstr_sdkFFI.xcframework.zip coinstr_sdkFFI.xcframework
-          echo "XCF_CHECKSUM=`swift package compute-checksum coinstr_sdkFFI.xcframework.zip`" >> $GITHUB_ENV
+          zip -9 -r smartvaults_sdkFFI.xcframework.zip smartvaults_sdkFFI.xcframework
+          echo "XCF_CHECKSUM=`swift package compute-checksum smartvaults_sdkFFI.xcframework.zip`" >> $GITHUB_ENV
 
       - name: Update Swift Package definition
-        working-directory: build/bindings/coinstr-sdk-ffi/bindings-swift
+        working-directory: build/bindings/smartvaults-sdk-ffi/bindings-swift
         run: |
-          sed 's#.binaryTarget(name: "coinstr_sdkFFI", path: "./coinstr_sdkFFI.xcframework"),#.binaryTarget(name: "coinstr_sdkFFI", url: "https://github.com/coinstr/coinstr-sdk-swift/releases/download/${{ inputs.version }}/coinstr_sdkFFI.xcframework.zip", checksum: "${{ env.XCF_CHECKSUM }}"),#;/.testTarget(name: "CoinstrSDKTests", dependencies: \["CoinstrSDK"\]),/d' Package.swift > ../../../../dist/Package.swift
+          sed 's#.binaryTarget(name: "smartvaults_sdkFFI", path: "./smartvaults_sdkFFI.xcframework"),#.binaryTarget(name: "smartvaults_sdkFFI", url: "https://github.com/smartvaults/smartvaults-sdk-swift/releases/download/${{ inputs.version }}/smartvaults_sdkFFI.xcframework.zip", checksum: "${{ env.XCF_CHECKSUM }}"),#;/.testTarget(name: "SmartVaultsSDKTests", dependencies: \["SmartVaultsSDK"\]),/d' Package.swift > ../../../../dist/Package.swift
           cp -r Sources ../../../../dist
 
       - name: Tag the Swift bindings
@@ -52,7 +52,7 @@ jobs:
           git config user.email github-actions@github.com
           git add Package.swift
           git add Sources
-          git commit -m "Update Coinstr SDK Swift bindings to version ${{ inputs.version }}"
+          git commit -m "Update SmartVaults SDK Swift bindings to version ${{ inputs.version }}"
           git push
           git tag ${{ inputs.version }} -m "${{ inputs.version }}"
           git push --tags
@@ -60,7 +60,7 @@ jobs:
       - name: Release and attach XCFramework binary artifact
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "build/bindings/coinstr-sdk-ffi/bindings-swift/coinstr_sdkFFI.xcframework.zip"
+          artifacts: "build/bindings/smartvaults-sdk-ffi/bindings-swift/smartvaults_sdkFFI.xcframework.zip"
           tag: ${{ inputs.version }}
           token: ${{ secrets.GITHUB_TOKEN }}
           name: ${{ inputs.version }}

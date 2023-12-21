@@ -1,4 +1,4 @@
-# Coinstr SDK – Swift Package
+# SmartVaults SDK – Swift Package
 
 ## Installation
 
@@ -9,7 +9,7 @@ This package is intended to be used with the [Swift Package Manager](https://www
 Via `File > Add Packages...`, add
 
 ```
-https://github.com/coinstr/coinstr-sdk-swift.git
+https://github.com/smartvaults/smartvaults-sdk-swift.git
 ```
 
 as a package dependency in Xcode.
@@ -19,41 +19,41 @@ as a package dependency in Xcode.
 Add the following to the dependencies array in your `Package.swift`:
 
 ``` swift
-.package(url: "https://github.com/coinstr/coinstr-sdk-swift.git", from: "0.3.0"),
+.package(url: "https://github.com/smartvaults/smartvaults-sdk-swift.git", from: "0.4.0"),
 ```
 
 ## 📄 Usage
 
 ``` swift
-import CoinstrSDK
+import SmartVaultsSDK
 
 // Generate a new keychain
-let coinstr = try Coinstr.generate(basePath: "/path/to/internal/storage", name: "keychain-name", password: "keychain-password", wordCount: WordCount.w24, passphrase: nil, network: Network.testnet);
+let client = try SmartVaults.generate(basePath: "/path/to/internal/storage", name: "keychain-name", password: "keychain-password", wordCount: WordCount.w24, passphrase: nil, network: Network.testnet);
 
 // Restore a keychain
-let coinstr = try Coinstr.restore(basePath: "/path/to/internal/storage", name: "keychain-name", password: "keychain-password", mnemonic: "...", passphrase: nil, network: Network.testnet);
+let client = try SmartVaults.restore(basePath: "/path/to/internal/storage", name: "keychain-name", password: "keychain-password", mnemonic: "...", passphrase: nil, network: Network.testnet);
 
 // Open a keychain
-let coinstr = try Coinstr.open(basePath: "/path/to/internal/storage", name: "keychain-name", password: "keychain-password", network: Network.testnet);
+let client = try SmartVaults.open(basePath: "/path/to/internal/storage", name: "keychain-name", password: "keychain-password", network: Network.testnet);
 
 // Get policies and proposals
-let policies = try coinstr.getPolicies();
-let proposals = try coinstr.getProposals();
+let policies = try client.getPolicies();
+let proposals = try client.getProposals();
 
 // Create a new proposal
 let amount = Amount.custom(1234);
 // OR
 let amount = Amount.max();
-let proposalId = try coinstr.spend(policyId: "...", toAddress: "address", amount: amount, description: "Back to faucet", targetBlocks: 3);
+let proposalId = try client.spend(policyId: "...", toAddress: "address", amount: amount, description: "Back to faucet", targetBlocks: 3);
 
 // Approve a proposal
-try coinstr.approve(proposalId: proposalId);
+try client.approve(proposalId: proposalId);
 
 // Finalize a proposal
-try coinstr.finalize(proposalId: proposalId);
+try client.finalize(proposalId: proposalId);
 
 // Shutdown the client (for logout)
-try coinstr.shutdown();
+try client.shutdown();
 
 ```
 
